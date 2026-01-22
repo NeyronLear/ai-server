@@ -6,7 +6,7 @@ This server hosts your Qwen3-VL AI model locally and makes it accessible via API
 
 1. **Python 3.8+** installed
 2. **CUDA-capable GPU** with sufficient VRAM (for GPU inference)
-3. **Unsloth** and related dependencies installed (from your training notebook)
+3. **Unsloth** and related dependencies installed
 4. **Cloudflared** (optional, for external access)
 
 ## Installation
@@ -111,10 +111,10 @@ Response:
 ```json
 {
   "status": "healthy",
-  "model_loaded": true,
-  "device": "cuda",
-  "gpu_available": true,
-  "gpu_name": "NVIDIA GeForce RTX 4090"
+  "model_loaded": true/false,
+  "device": "cuda"/"cpu",
+  "gpu_available": true/false,
+  "gpu_name": "{your_gpu_here}"
 }
 ```
 
@@ -188,25 +188,14 @@ Returns API information and status.
 - The server includes CORS middleware allowing all origins
 - If issues persist, check browser console for specific errors
 
-## Performance Tips
-
-1. **GPU Memory**: The model loads in 4-bit quantization to save VRAM
-2. **Batch Processing**: Currently processes one request at a time
-3. **Caching**: Consider implementing response caching for repeated queries
-4. **Streaming**: For better UX, consider implementing streaming responses (future enhancement)
-
 ## Security Notes
-
-⚠️ **Important**: 
-- The server allows CORS from all origins (`allow_origins=["*"]`)
-- For production, restrict this to your specific domain
+ 
+- The server allows CORS from all origins (`allow_origins=["*"]`). For production, restrict this to your specific domain
 - Cloudflare tunnel URLs are temporary and change on restart
 - Consider adding authentication for production use
 
 ## Next Steps
 
 - Add authentication/API keys
-- Implement streaming responses
-- Add conversation history/context management
+- Add conversation history/context management and prompt
 - Implement rate limiting
-- Add logging and monitoring
