@@ -4,7 +4,7 @@ This server hosts your Qwen3-VL AI model locally and makes it accessible via API
 
 ## Prerequisites
 
-1. **Python 3.8+** installed
+1. **Python 3.8+**
 2. **CUDA-capable GPU** with sufficient VRAM (for GPU inference)
 3. **Unsloth** and related dependencies installed
 4. **Cloudflared** (optional, for external access)
@@ -199,3 +199,4 @@ Returns API information and status.
 - Add authentication/API keys
 - Add conversation history/context management and prompt
 - Implement rate limiting
+
