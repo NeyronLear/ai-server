@@ -1,0 +1,20 @@
+# Requirements for AI Server
+# Install with: pip install -r requirements_server.txt
+
+# Web framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.0.0
+
+# AI/ML libraries (if not already installed)
+# Note: Unsloth installation may vary - check their documentation
+# torch>=2.0.0  # Usually installed with Unsloth
+# transformers>=4.57.2  # Usually installed with Unsloth
+# unsloth  # Install separately: pip install unsloth
+
+# CORS support (included in fastapi but explicit)
+python-multipart>=0.0.6
+
+# Optional: For better async performance
+httptools>=0.6.0
+uvloop>=0.19.0; sys_platform != "win32"  # Not available on Windows
