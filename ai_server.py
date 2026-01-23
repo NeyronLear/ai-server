@@ -1,7 +1,4 @@
-"""
-AI Server for hosting Qwen3-VL model locally with Cloudflare tunnel support.
-This server hosts the AI model in GPU memory and provides API endpoints for chat.
-"""
+"""Файл для запуска сервера модели ИИ с и облачным туннелем."""
 
 import os
 import sys
@@ -19,23 +16,22 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import uvicorn
 
-# Import Unsloth for model loading
 try:
     from unsloth import FastVisionModel
     from transformers import TextIteratorStreamer
     from threading import Thread
 except ImportError:
-    print("Warning: Unsloth not installed. Please install it with: pip install unsloth")
+    print("Внимание: Необходимо установить пакет 'unsloth' для работы")
     FastVisionModel = None
 
 # Configuration
-MODEL_PATH = "lora_model"  # Path to your saved LoRA model, or use base model
-BASE_MODEL = "unsloth/Qwen3-VL-8B-Instruct-unsloth-bnb-4bit"  # Base model if LoRA not found
+MODEL_PATH = "lora_model"  # Путь к предобученной модели LoRA
+BASE_MODEL = "unsloth/Qwen3-VL-8B-Instruct-unsloth-bnb-4bit"  # Базовая модель как запасной вариант
 PORT = 8000
 HOST = "0.0.0.0"
 
 # Global variables
-app = FastAPI(title="AI Chat Server", version="1.0.0")
+app = FastAPI(title="Сервер ИИ", version="1.0.0")
 model = None
 tokenizer = None
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -57,6 +53,7 @@ class ChatRequest(BaseModel):
     temperature: Optional[float] = 0.7
     top_p: Optional[float] = 0.9
     do_sample: Optional[bool] = True
+    system_prompt: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
@@ -73,59 +70,58 @@ class HealthResponse(BaseModel):
 
 
 def ensure_cloudflared():
-    """Ensure cloudflared is installed and available."""
+    """Убедиться, что cloudflared установлен и доступен."""
     if shutil.which("cloudflared") is not None:
         return True
     
-    print("cloudflared not found. Please install it:")
-    print("  Windows: Download from https://github.com/cloudflare/cloudflared/releases")
-    print("  Or run: winget install --id Cloudflare.cloudflared")
-    print("  Linux/Mac: brew install cloudflared or download from releases")
+    print("Cloudflared не найден в. Он необходим для создания туннеля. Скачать можно здесь::")
+    print("  Windows: Скачать с https://github.com/cloudflare/cloudflared/releases")
+    print("           Или запустить в cmd: winget install --id Cloudflare.cloudflared")
+    print("  Linux/Mac: brew install cloudflared")
     return False
 
 
 def load_model():
-    """Load the Qwen3-VL model into GPU memory."""
+    """Загрузка модели ИИ."""
     global model, tokenizer
     
     if FastVisionModel is None:
-        raise RuntimeError("Unsloth is not installed. Please install it first.")
+        raise RuntimeError("Пакет 'unsloth' не установлен. Для начала установите его.")
     
-    print("Loading AI model...")
-    print(f"Device: {device}")
+    print(f"Устройство: {device}")
     
     if device == "cuda":
         print(f"GPU: {torch.cuda.get_device_name(0)}")
-        print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+        print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} ГБ")
     
     try:
-        # Try to load saved LoRA model first
+        # Для начала попробуем загрузить LoRA модель
         if os.path.exists(MODEL_PATH) and os.path.isdir(MODEL_PATH):
-            print(f"Loading model from {MODEL_PATH}...")
+            print(f"Загрузка модели из {MODEL_PATH}...")
             model, tokenizer = FastVisionModel.from_pretrained(
                 MODEL_PATH,
                 load_in_4bit=True,
                 use_gradient_checkpointing="unsloth",
             )
-            print("Model loaded from saved path.")
+            print("Модель LoRA загружена.")
         else:
-            # Load base model
-            print(f"Loading base model: {BASE_MODEL}...")
+            # В ином случае загружаем базовую модель
+            print(f"Загрузка базовой модели: {BASE_MODEL}...")
             model, tokenizer = FastVisionModel.from_pretrained(
                 BASE_MODEL,
                 load_in_4bit=True,
                 use_gradient_checkpointing="unsloth",
             )
-            print("Base model loaded.")
+            print("Базовая модель загружена.")
         
-        # Set model to evaluation mode
+        # Установка модели в режим инференса
         FastVisionModel.for_inference(model)
-        
-        print("Model loaded successfully!")
+
+        print("Модель загружена успешно!")
         return True
         
     except Exception as e:
-        print(f"Error loading model: {e}")
+        print(f"Ошибка при загрузке модели: {e}")
         raise
 
 
@@ -135,28 +131,53 @@ def generate_response(
     temperature: float = 0.7,
     top_p: float = 0.9,
     do_sample: bool = True,
+    system_prompt: Optional[str] = None,
 ) -> str:
-    """Generate a response from the AI model."""
+    """Генерация ответа от модели ИИ."""
     global model, tokenizer
     
     if model is None or tokenizer is None:
-        raise RuntimeError("Model not loaded")
+        raise RuntimeError("Модель не загружена.")
     
     try:
-        # Format message as a conversation
-        messages = [
-            {"role": "user", "content": message}
-        ]
+        # Форматирование сообщения с учетом системного промпта
+        # Если модель не поддерживает системные сообщения, они будут проигнорированы
+        if system_prompt and system_prompt.strip():
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": message}
+            ]
+        else:
+            # Без системного промта
+            messages = [
+                {"role": "user", "content": message}
+            ]
         
-        # Apply chat template
-        inputs = tokenizer.apply_chat_template(
-            messages,
-            tokenize=True,
-            add_generation_prompt=True,
-            return_tensors="pt"
-        ).to(device)
+        # Применение макета токенизатора к сообщениям
+        try:
+            inputs = tokenizer.apply_chat_template(
+                messages,
+                tokenize=True,
+                add_generation_prompt=True,
+                return_tensors="pt"
+            ).to(device)
+        except Exception as e:
+            # Если модель не поддерживает системные сообщения, объединяем их с сообщением пользователя
+            if system_prompt and system_prompt.strip() and len(messages) > 1:
+                print(f"Системное сообщение не поддерживается, объединяем с сообщением пользователя: {e}")
+                messages = [
+                    {"role": "user", "content": f"{system_prompt}\n\n{message}"}
+                ]
+                inputs = tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=True,
+                    add_generation_prompt=True,
+                    return_tensors="pt"
+                ).to(device)
+            else:
+                raise
         
-        # Generate response
+        # Генерация ответа
         with torch.no_grad():
             outputs = model.generate(
                 inputs,
@@ -167,7 +188,7 @@ def generate_response(
                 pad_token_id=tokenizer.eos_token_id,
             )
         
-        # Decode response (skip the input tokens)
+        # Декодирование ответа
         response = tokenizer.decode(
             outputs[0][inputs.shape[1]:],
             skip_special_tokens=True
@@ -176,23 +197,23 @@ def generate_response(
         return response.strip()
         
     except Exception as e:
-        print(f"Error generating response: {e}")
+        print(f"Ошибка при генерации ответа: {e}")
         raise
 
 
 @app.on_event("startup")
 async def startup_event():
-    """Load model on server startup."""
+    """Загрузка модели при запуске сервера."""
     try:
         load_model()
     except Exception as e:
-        print(f"Failed to load model: {e}")
-        print("Server will start but chat endpoints will not work.")
+        print(f"Ошибка при загрузке модели: {e}")
+        print("Сервер запуститься, но /chat endpoint не будет работать.")
 
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
-    """Health check endpoint."""
+    """Проверка состояния сервера."""
     gpu_available = torch.cuda.is_available()
     gpu_name = None
     
@@ -210,18 +231,33 @@ async def health_check():
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    """Chat endpoint - main API for interacting with the AI."""
+    """Эндпоинт чата - основной API для взаимодействия с ИИ."""
     if model is None or tokenizer is None:
         raise HTTPException(
             status_code=503,
-            detail="Model not loaded. Please check server logs."
+            detail="Модель не загружена. Проверьте логи сервера."
         )
     
     if not request.message or not request.message.strip():
         raise HTTPException(
             status_code=400,
-            detail="Message cannot be empty"
+            detail="Сообщение не может быть пустым."
         )
+    
+    # Validate parameters
+    if request.temperature is not None:
+        if request.temperature < 0 or request.temperature > 2:
+            raise HTTPException(
+                status_code=400,
+                detail="Температура должна быть между 0 и 2"
+            )
+    
+    if request.top_p is not None:
+        if request.top_p < 0 or request.top_p > 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Top_p должен быть между 0 и 1"
+            )
     
     try:
         response_text = generate_response(
@@ -230,6 +266,7 @@ async def chat(request: ChatRequest):
             temperature=request.temperature,
             top_p=request.top_p,
             do_sample=request.do_sample,
+            system_prompt=request.system_prompt,
         )
         
         return ChatResponse(
@@ -238,18 +275,18 @@ async def chat(request: ChatRequest):
         )
         
     except Exception as e:
-        print(f"Error in chat endpoint: {e}")
+        print(f"Ошибка в эндпоинте чата: {e}")
         raise HTTPException(
             status_code=500,
-            detail=f"Error generating response: {str(e)}"
+            detail=f"Ошибка при генерации ответа: {str(e)}"
         )
 
 
 @app.get("/")
 async def root():
-    """Root endpoint with API information."""
+    """Корневой эндпоинт с информацией об API."""
     return {
-        "name": "AI Chat Server",
+        "name": "Сервер ИИ",
         "version": "1.0.0",
         "endpoints": {
             "health": "/health",
@@ -260,99 +297,94 @@ async def root():
 
 
 def start_cloudflare_tunnel(port: int):
-    """Start Cloudflare tunnel in a separate process."""
+    """Запуск Cloudflare tunnel в отдельном процессе."""
     if not ensure_cloudflared():
-        print("Cloudflared not available. Server will only be accessible locally.")
+        print("Cloudflared не доступен. Сервер будет доступен только локально.")
         return None
     
     try:
         import time
         import threading
         
-        # Start cloudflared tunnel
+        # Запуск туннеля
         process = subprocess.Popen(
             ["cloudflared", "tunnel", "--url", f"http://localhost:{port}"],
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,  # Combine stderr into stdout
+            stderr=subprocess.STDOUT,
             text=True,
             bufsize=1
         )
         
-        # Function to read and print tunnel URL
+        # Функция для чтения URL туннеля из вывода
         def read_tunnel_url():
-            time.sleep(3)  # Give cloudflared time to start
+            time.sleep(3)  # Небольшая задержка для инициализации
             print("\n" + "="*50)
-            print("Cloudflare Tunnel Starting...")
+            print("Туннель запускается...")
             print("="*50)
-            print("Reading tunnel URL (this may take a few seconds)...")
+            print("Чтение URL туннеля (это может занять несколько секунд)...")
             
-            # Read output line by line
+            # Чтение вывода посторочно
             url_found = False
             for line in iter(process.stdout.readline, ''):
                 if not line:
                     break
                 line = line.strip()
-                # Cloudflared prints the URL in various formats
                 if 'https://' in line and '.trycloudflare.com' in line:
-                    # Extract URL
                     import re
                     urls = re.findall(r'https://[^\s]+\.trycloudflare\.com', line)
                     if urls:
-                        print(f"✓ Public URL: {urls[0]}")
-                        print(f"  Share this URL to access your server from anywhere!")
+                        print(f"Публичный URL: {urls[0]}")
+                        print("Теперь вы можете использовать этот URL для доступа к вашему серверу ИИ.")
                         url_found = True
                         break
                 elif 'trycloudflare.com' in line:
-                    print(f"Tunnel output: {line}")
+                    print(f"Публичный URL: {line}")
             
             if not url_found:
-                print("Note: Could not automatically detect tunnel URL.")
-                print("Check the cloudflared output above for the URL.")
+                print("Не удалось найти URL туннеля в выводе.")
+                print("Проверьте вывод cloudflared для самостоятельного поиска URL.")
             print("="*50 + "\n")
         
-        # Start reading in background
         thread = threading.Thread(target=read_tunnel_url, daemon=True)
         thread.start()
         
         return process
         
     except Exception as e:
-        print(f"Error starting Cloudflare tunnel: {e}")
-        print("You can manually start a tunnel with:")
-        print(f"  cloudflared tunnel --url http://localhost:{port}")
+        print(f"Ошибка при запуске Cloudflare tunnel: {e}")
+        print("Вы можете вручную запустить туннель с помощью:")
+        print(f"cloudflared tunnel --url http://localhost:{port}")
         return None
 
 
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description="AI Chat Server")
-    parser.add_argument("--port", type=int, default=PORT, help="Server port")
-    parser.add_argument("--host", type=str, default=HOST, help="Server host")
-    parser.add_argument("--model-path", type=str, default=MODEL_PATH, help="Path to model")
-    parser.add_argument("--no-tunnel", action="store_true", help="Don't start Cloudflare tunnel")
-    parser.add_argument("--reload", action="store_true", help="Enable auto-reload (development)")
+    parser = argparse.ArgumentParser(description="Сервер ИИ с Cloudflare tunnel")
+    parser.add_argument("--port", type=int, default=PORT, help="Порт сервера")
+    parser.add_argument("--host", type=str, default=HOST, help="Хост сервера")
+    parser.add_argument("--model-path", type=str, default=MODEL_PATH, help="Путь к модели")
+    parser.add_argument("--no-tunnel", action="store_true", help="Не запускать Cloudflare tunnel")
+    parser.add_argument("--reload", action="store_true", help="Включить автоматическую перезагрузку при изменениях кода (позволяет видеть изменения без перезапуска сервера)")
     
     args = parser.parse_args()
     
-    # Update global variables
     PORT = args.port
     HOST = args.host
     MODEL_PATH = args.model_path
     
-    # Start Cloudflare tunnel if requested
     tunnel_process = None
     if not args.no_tunnel:
         tunnel_process = start_cloudflare_tunnel(PORT)
     
-    print(f"\nStarting AI Server on {HOST}:{PORT}")
-    print(f"Model path: {MODEL_PATH}")
-    print(f"Local URL: http://localhost:{PORT}")
-    print(f"Health check: http://localhost:{PORT}/health")
-    print(f"Chat endpoint: http://localhost:{PORT}/chat\n")
+    print(f"\nЗапуск сервера ИИ на {HOST}:{PORT}")
+    print(f"Путь к модели: {MODEL_PATH}")
+    print(f"Локальный URL: http://localhost:{PORT}")
+    print(f"Проверка состояния: http://localhost:{PORT}/health")
+    print(f"Эндпоинт чата: http://localhost:{PORT}/chat\n")
     
     try:
-        # Run the server
+        # Запуск сервера Uvicorn
         uvicorn.run(
             app,
             host=HOST,
@@ -361,7 +393,7 @@ if __name__ == "__main__":
             log_level="info"
         )
     except KeyboardInterrupt:
-        print("\nShutting down server...")
+        print("\nВыключение сервера...")
         if tunnel_process:
             tunnel_process.terminate()
         sys.exit(0)
