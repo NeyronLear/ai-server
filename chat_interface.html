@@ -41,6 +41,28 @@
             font-size: 24px;
             font-weight: 600;
             box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header-title {
+            flex: 1;
+        }
+
+        .settings-button {
+            background: rgba(255, 255, 255, 0.2);
+            border: none;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background 0.3s;
+        }
+
+        .settings-button:hover {
+            background: rgba(255, 255, 255, 0.3);
         }
 
         .chat-messages {
@@ -250,12 +272,189 @@
         .chat-messages::-webkit-scrollbar-thumb:hover {
             background: #555;
         }
+
+        /* Settings Panel */
+        .settings-panel {
+            position: fixed;
+            top: 0;
+            right: -400px;
+            width: 400px;
+            height: 100vh;
+            background: white;
+            box-shadow: -2px 0 10px rgba(0, 0, 0, 0.1);
+            transition: right 0.3s ease;
+            z-index: 1000;
+            overflow-y: auto;
+        }
+
+        .settings-panel.open {
+            right: 0;
+        }
+
+        .settings-content {
+            padding: 30px;
+        }
+
+        .settings-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 2px solid #e0e0e0;
+        }
+
+        .settings-header h2 {
+            margin: 0;
+            color: #333;
+            font-size: 24px;
+        }
+
+        .close-settings {
+            background: none;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            color: #666;
+            padding: 0;
+            width: 30px;
+            height: 30px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .close-settings:hover {
+            color: #333;
+        }
+
+        .setting-group {
+            margin-bottom: 25px;
+        }
+
+        .setting-label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #333;
+            font-size: 14px;
+        }
+
+        .setting-description {
+            font-size: 13px;
+            color: #666;
+            margin-bottom: 12px;
+            line-height: 1.6;
+        }
+
+        .setting-description strong {
+            color: #333;
+            font-weight: 600;
+        }
+
+        .setting-input {
+            width: 100%;
+            padding: 10px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            font-family: inherit;
+            transition: border-color 0.3s;
+        }
+
+        .setting-input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .setting-textarea {
+            min-height: 100px;
+            resize: vertical;
+        }
+
+        .setting-slider-container {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .setting-slider {
+            flex: 1;
+            height: 6px;
+            border-radius: 3px;
+            background: #e0e0e0;
+            outline: none;
+            -webkit-appearance: none;
+        }
+
+        .setting-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #667eea;
+            cursor: pointer;
+        }
+
+        .setting-slider::-moz-range-thumb {
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #667eea;
+            cursor: pointer;
+            border: none;
+        }
+
+        .setting-value {
+            min-width: 50px;
+            text-align: center;
+            font-weight: 600;
+            color: #667eea;
+            font-size: 14px;
+        }
+
+        .settings-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.3s, visibility 0.3s;
+            z-index: 999;
+        }
+
+        .settings-overlay.active {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        .reset-settings {
+            margin-top: 20px;
+            padding: 10px 20px;
+            background: #f44336;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: background 0.3s;
+        }
+
+        .reset-settings:hover {
+            background: #d32f2f;
+        }
     </style>
 </head>
 <body>
     <div class="chat-container">
         <div class="chat-header">
-            🤖 AI Chat Assistant
+            <div class="header-title">🤖 AI Chat Assistant</div>
+            <button class="settings-button" id="settingsButton">⚙️ Settings</button>
         </div>
         <div class="chat-messages" id="chatMessages">
             <div class="message ai">
@@ -283,6 +482,77 @@
         <div class="server-status" id="serverStatus">Connecting to server...</div>
     </div>
 
+    <!-- Settings Panel -->
+    <div class="settings-overlay" id="settingsOverlay"></div>
+    <div class="settings-panel" id="settingsPanel">
+        <div class="settings-content">
+            <div class="settings-header">
+                <h2>⚙️ Settings</h2>
+                <button class="close-settings" id="closeSettings">×</button>
+            </div>
+
+            <div class="setting-group">
+                <label class="setting-label" for="systemPrompt">System Prompt (Системный промпт)</label>
+                <div class="setting-description">
+                    <strong>Что делает:</strong> Позволяет задать контекст и инструкции для AI. Этот текст будет добавлен к каждому вашему сообщению, чтобы задать поведение модели.<br>
+                    <strong>Примеры:</strong> "Ты - опытный программист", "Отвечай кратко и по делу", "Используй простой язык" и т.д.
+                </div>
+                <textarea 
+                    class="setting-input setting-textarea" 
+                    id="systemPrompt" 
+                    placeholder="Ты - полезный AI-ассистент..."
+                ></textarea>
+            </div>
+
+            <div class="setting-group">
+                <label class="setting-label" for="temperatureSlider">Temperature (Температура)</label>
+                <div class="setting-description">
+                    <strong>Что делает:</strong> Контролирует случайность и креативность ответов модели.<br>
+                    <strong>Низкие значения (0.1-0.5):</strong> Более детерминированные, точные и сфокусированные ответы. Модель выбирает наиболее вероятные слова.<br>
+                    <strong>Средние значения (0.6-0.8):</strong> Баланс между точностью и креативностью. Рекомендуется для большинства задач.<br>
+                    <strong>Высокие значения (0.9-2.0):</strong> Более креативные, разнообразные и неожиданные ответы. Модель может генерировать менее предсказуемый текст.
+                    <strong>Рекомендуется значение в районе 0.7 - 1.2. Слишком низкие значения - возможно повторение фраз. Слишком высокие - фантазирование.</strong>
+                </div>
+                <div class="setting-slider-container">
+                    <input 
+                        type="range" 
+                        class="setting-slider" 
+                        id="temperatureSlider" 
+                        min="0" 
+                        max="2" 
+                        step="0.1" 
+                        value="0.7"
+                    >
+                    <span class="setting-value" id="temperatureValue">0.7</span>
+                </div>
+            </div>
+
+            <div class="setting-group">
+                <label class="setting-label" for="topPSlider">Top P (Ядерная выборка)</label>
+                <div class="setting-description">
+                    <strong>Что делает:</strong> Контролирует разнообразие ответов через метод ядерной выборки (nucleus sampling).<br>
+                    <strong>Низкие значения (0.1-0.5):</strong> Модель выбирает только из наиболее вероятных слов. Ответы более сфокусированные и предсказуемые.<br>
+                    <strong>Средние значения (0.6-0.8):</strong> Баланс между разнообразием и релевантностью. Хорошо для большинства диалогов.<br>
+                    <strong>Высокие значения (0.9-1.0):</strong> Модель рассматривает больше вариантов слов, что приводит к более разнообразным и неожиданным ответам.
+                </div>
+                <div class="setting-slider-container">
+                    <input 
+                        type="range" 
+                        class="setting-slider" 
+                        id="topPSlider" 
+                        min="0" 
+                        max="1" 
+                        step="0.05" 
+                        value="0.9"
+                    >
+                    <span class="setting-value" id="topPValue">0.9</span>
+                </div>
+            </div>
+
+            <button class="reset-settings" id="resetSettings">Reset to Defaults</button>
+        </div>
+    </div>
+
     <script>
         // Configuration - Update these to match your Python server
         const SERVER_URL = 'http://localhost:8000'; // Change port if needed
@@ -294,6 +564,102 @@
         const sendButton = document.getElementById('sendButton');
         const typingIndicator = document.getElementById('typingIndicator');
         const serverStatus = document.getElementById('serverStatus');
+        
+        // Settings elements
+        const settingsButton = document.getElementById('settingsButton');
+        const settingsPanel = document.getElementById('settingsPanel');
+        const settingsOverlay = document.getElementById('settingsOverlay');
+        const closeSettings = document.getElementById('closeSettings');
+        const systemPrompt = document.getElementById('systemPrompt');
+        const temperatureSlider = document.getElementById('temperatureSlider');
+        const temperatureValue = document.getElementById('temperatureValue');
+        const topPSlider = document.getElementById('topPSlider');
+        const topPValue = document.getElementById('topPValue');
+        const resetSettings = document.getElementById('resetSettings');
+
+        // Settings state
+        let currentSettings = {
+            systemPrompt: '',
+            temperature: 0.7,
+            topP: 0.9
+        };
+
+        // Load settings from localStorage
+        function loadSettings() {
+            const saved = localStorage.getItem('aiChatSettings');
+            if (saved) {
+                try {
+                    currentSettings = JSON.parse(saved);
+                    systemPrompt.value = currentSettings.systemPrompt || '';
+                    temperatureSlider.value = currentSettings.temperature || 0.7;
+                    topPSlider.value = currentSettings.topP || 0.9;
+                    updateSliderValues();
+                } catch (e) {
+                    console.error('Error loading settings:', e);
+                }
+            }
+        }
+
+        // Save settings to localStorage
+        function saveSettings() {
+            currentSettings = {
+                systemPrompt: systemPrompt.value,
+                temperature: parseFloat(temperatureSlider.value),
+                topP: parseFloat(topPSlider.value)
+            };
+            localStorage.setItem('aiChatSettings', JSON.stringify(currentSettings));
+        }
+
+        // Update slider value displays
+        function updateSliderValues() {
+            temperatureValue.textContent = temperatureSlider.value;
+            topPValue.textContent = topPSlider.value;
+        }
+
+        // Settings panel controls
+        settingsButton.addEventListener('click', () => {
+            settingsPanel.classList.add('open');
+            settingsOverlay.classList.add('active');
+        });
+
+        closeSettings.addEventListener('click', closeSettingsPanel);
+        settingsOverlay.addEventListener('click', closeSettingsPanel);
+
+        function closeSettingsPanel() {
+            settingsPanel.classList.remove('open');
+            settingsOverlay.classList.remove('active');
+            saveSettings();
+        }
+
+        // Update slider displays on change
+        temperatureSlider.addEventListener('input', () => {
+            updateSliderValues();
+            saveSettings();
+        });
+
+        topPSlider.addEventListener('input', () => {
+            updateSliderValues();
+            saveSettings();
+        });
+
+        // Save settings when system prompt changes
+        systemPrompt.addEventListener('input', saveSettings);
+
+        // Reset settings
+        resetSettings.addEventListener('click', () => {
+            if (confirm('Reset all settings to defaults?')) {
+                currentSettings = {
+                    systemPrompt: '',
+                    temperature: 0.7,
+                    topP: 0.9
+                };
+                systemPrompt.value = '';
+                temperatureSlider.value = 0.7;
+                topPSlider.value = 0.9;
+                updateSliderValues();
+                saveSettings();
+            }
+        });
 
         // Auto-resize textarea
         chatInput.addEventListener('input', function() {
@@ -377,7 +743,7 @@
             showTypingIndicator(true);
 
             try {
-                // Send request to server
+                // Send request to server with current settings
                 const response = await fetch(`${SERVER_URL}${API_ENDPOINT}`, {
                     method: 'POST',
                     headers: {
@@ -385,7 +751,9 @@
                     },
                     body: JSON.stringify({
                         message: message,
-                        // Add any other parameters your server expects
+                        temperature: parseFloat(temperatureSlider.value),
+                        top_p: parseFloat(topPSlider.value),
+                        system_prompt: systemPrompt.value.trim() || null,
                     })
                 });
 
@@ -400,7 +768,7 @@
                 
                 // Add AI response to chat
                 // Adjust based on your server's response format
-                const aiResponse = data.response || data.message || data.answer || data.text || 'No response received';
+                const aiResponse = data.response || 'No response received';
                 addMessage(aiResponse, false);
                 
                 updateServerStatus(true);
@@ -439,6 +807,7 @@
         }
 
         // Initialize
+        loadSettings();
         testConnection();
         chatInput.focus();
     </script>
