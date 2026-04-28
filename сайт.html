@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <link rel="stylesheet" type="text/css" href='cssшрифт.css'>
+</head>
+<body>
+    <script src="работа.js" defer></script>
+
+    <div class="banner" id="banner">Перед использованием "Виртуального Архимеда"™ зайдите в настройки и вставьте URL сервера (или проверьте правильность имеющегося)</div>
+
+    <div class="chat-container">
+        <div class="chat-header">
+            <div class="header-title">Виртуальный Архимед</div>
+            <button class="settings-button" id="settingsButton">⚙️ Настройки</button>
+        </div>
+        <div class="chat-messages" id="chatMessages">
+            <div class="message ai">
+                <div class="message-content">Привет! Чем я могу вам помочь?</div>
+                <div class="message-time">Ваш Архимед</div>
+            </div>
+        </div>
+        <div class="typing-indicator" id="typingIndicator">
+            <div class="typing-dots">
+                <span></span>
+                <span></span>
+                <span></span>
+            </div>
+        </div>
+        <div class="image-upload-container" id="imageUploadContainer">
+            <div class="image-preview-container" id="imagePreviewContainer"></div>
+            <label for="imageUploadInput" class="image-upload-button">
+                📷 Добавить изображение
+            </label>
+            <input type="file" id="imageUploadInput" class="image-upload-input" accept="image/*" multiple>
+        </div>
+        <div class="chat-input-container">
+            <div class="input-wrapper">
+                <textarea 
+                    id="chatInput" 
+                    placeholder="Введите ваше сообщение" 
+                    rows="1"
+                ></textarea>
+            </div>
+            <button id="imageToggleButton" class="imageToggleButton" title="Toggle image upload">📷</button>
+            <button id="sendButton">Отправить</button>
+        </div>
+        <div class="server-status" id="serverStatus">Waiting for connection</div>
+    </div>
+
+    <!-- Settings Panel -->
+    <div class="settings-overlay" id="settingsOverlay"></div>
+    <div class="settings-panel" id="settingsPanel">
+        <div class="settings-content">
+            <div class="settings-header">
+                <h2>⚙️ Настройки</h2>
+                <button class="close-settings" id="closeSettings">×</button>
+            </div>
+            <div class="setting-group">
+                <label class="setting-label" for="settingServer">URL обращения к серверу</label>
+                <div class="setting-description">
+                    Вставьте сюда полный URL туннеля, полученный из сервера.
+                </div>
+                <textarea 
+                    class="setting-input setting-textarea" 
+                    id="settingServer" 
+                    placeholder="https://...trycloudflare.com"
+                ></textarea>
+                <button class="setting-server-button" id="serverButton">Отправить</button>
+                <a class="server-status-setting" id="serverStatusSetting">Waiting for connection</a>
+            </div>
+            <div class="setting-group">
+                <label class="setting-label" for="systemPrompt">System Prompt (Системный промпт)</label>
+                <div class="setting-description">
+                    <strong>Что делает:</strong> Позволяет задать контекст и инструкции для AI. Этот текст будет добавлен к каждому вашему сообщению, чтобы задать поведение модели.<br>
+                    <strong>Примеры:</strong> "Ты - опытный программист", "Отвечай кратко и по делу", "Используй простой язык" и т.д.
+                </div>
+                <textarea 
+                    class="setting-input setting-textarea" 
+                    id="systemPrompt" 
+                    placeholder="Ты - полезный AI-ассистент..."
+                ></textarea>
+            </div>
+
+            <div class="setting-group">
+                <label class="setting-label" for="temperatureSlider">Temperature (Температура)</label>
+                <div class="setting-description">
+                    <strong>Что делает:</strong> Контролирует случайность и креативность ответов модели.<br>
+                    <strong>Низкие значения (0.1-0.5):</strong> Более детерминированные, точные и сфокусированные ответы. Модель выбирает наиболее вероятные слова.<br>
+                    <strong>Средние значения (0.6-0.8):</strong> Баланс между точностью и креативностью. Рекомендуется для большинства задач.<br>
+                    <strong>Высокие значения (0.9-2.0):</strong> Более креативные, разнообразные и неожиданные ответы. Модель может генерировать менее предсказуемый текст.
+                    <strong>Рекомендуется значение в районе 0.7 - 1.2. Слишком низкие значения - возможно повторение фраз. Слишком высокие - фантазирование.</strong>
+                </div>
+                <div class="setting-slider-container">
+                    <input 
+                        type="range" 
+                        class="setting-slider" 
+                        id="temperatureSlider" 
+                        min="0" 
+                        max="2" 
+                        step="0.1" 
+                        value="0.7"
+                    >
+                    <span class="setting-value" id="temperatureValue">0.7</span>
+                </div>
+            </div>
+
+            <div class="setting-group">
+                <label class="setting-label" for="topPSlider">Top P (Ядерная выборка)</label>
+                <div class="setting-description">
+                    <strong>Что делает:</strong> Контролирует разнообразие ответов через метод ядерной выборки (nucleus sampling).<br>
+                    <strong>Низкие значения (0.1-0.5):</strong> Модель выбирает только из наиболее вероятных слов. Ответы более сфокусированные и предсказуемые.<br>
+                    <strong>Средние значения (0.6-0.8):</strong> Баланс между разнообразием и релевантностью. Хорошо для большинства диалогов.<br>
+                    <strong>Высокие значения (0.9-1.0):</strong> Модель рассматривает больше вариантов слов, что приводит к более разнообразным и неожиданным ответам.
+                </div>
+                <div class="setting-slider-container">
+                    <input 
+                        type="range" 
+                        class="setting-slider" 
+                        id="topPSlider" 
+                        min="0" 
+                        max="1" 
+                        step="0.05" 
+                        value="0.9"
+                    >
+                    <span class="setting-value" id="topPValue">0.9</span>
+                </div>
+            </div>
+
+            <label class="setting-label">Ваши настройки сохраняются автоматически</label>
+
+            <button class="reset-settings" id="resetSettings">Reset to Defaults</button>
+
+        </div>
+    </div>
+</body>
