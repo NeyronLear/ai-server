@@ -65,6 +65,23 @@ class HealthResponse(BaseModel):
     tunnel_url: Optional[str] = None
 
 
+class AdminPromptRequest(BaseModel):
+    new_prompt: str = ""
+    user_role: str = "user"
+
+
+class UserCreateRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=120)
+    role: str = Field(default="user")
+    user_role: str = Field(default="user", description="Роль того, кто выполняет действие")
+
+
+class UserUpdateRequest(BaseModel):
+    username: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    role: Optional[str] = None
+    user_role: str = Field(default="user", description="Роль того, кто выполняет действие")
+
+
 # ---------- Global runtime state ----------
 @dataclass # автоматически создают __init__ для класса, в котором инициализирует данные. по сути генератор шаблона на лету
 class RuntimeState:
@@ -77,6 +94,7 @@ class RuntimeState:
 
 
 STATE = RuntimeState()
+admin_prompt = ""
 
 
 # ---------- FastAPI app ----------
@@ -107,6 +125,107 @@ def init_chat_db(db_path: str) -> None:
             """
         )
         conn.commit() # исполняем введенную команду
+
+
+def init_users_db(db_path: str) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                role TEXT NOT NULL CHECK (role IN ('user', 'admin')),
+                password_hash TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.commit()
+
+
+def list_users(db_path: str) -> list[dict[str, Any]]:
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.execute(
+            """
+            SELECT id, username, role, created_at, updated_at
+            FROM users
+            ORDER BY id DESC
+            """
+        )
+        rows = cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
+def create_user(db_path: str, username: str, role: str) -> dict[str, Any]:
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds") + "Z"
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO users (username, role, password_hash, created_at, updated_at)
+            VALUES (?, ?, NULL, ?, ?)
+            """,
+            (username.strip(), role, now, now),
+        )
+        user_id = cursor.lastrowid
+        conn.commit()
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT id, username, role, created_at, updated_at
+            FROM users
+            WHERE id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+    return dict(row) if row else {}
+
+
+def update_user(db_path: str, user_id: int, username: Optional[str], role: Optional[str]) -> Optional[dict[str, Any]]:
+    fields: list[str] = []
+    params: list[Any] = []
+    if username is not None:
+        fields.append("username = ?")
+        params.append(username.strip())
+    if role is not None:
+        fields.append("role = ?")
+        params.append(role)
+    if not fields:
+        return get_user_by_id(db_path, user_id)
+
+    fields.append("updated_at = ?")
+    params.append(datetime.now(timezone.utc).isoformat(timespec="seconds") + "Z")
+    params.append(user_id)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            f"UPDATE users SET {', '.join(fields)} WHERE id = ?",
+            params,
+        )
+        conn.commit()
+    return get_user_by_id(db_path, user_id)
+
+
+def get_user_by_id(db_path: str, user_id: int) -> Optional[dict[str, Any]]:
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT id, username, role, created_at, updated_at
+            FROM users
+            WHERE id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def delete_user(db_path: str, user_id: int) -> bool:
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        conn.commit()
+    return cursor.rowcount > 0
 
 
 def save_chat_message(
@@ -441,13 +560,21 @@ async def chat(request: ChatRequest) -> ChatResponse:
         raise HTTPException(status_code=503, detail="Model is not loaded.")
 
     try:
+        effective_system_prompt = None
+        if admin_prompt and request.system_prompt:
+            effective_system_prompt = f"{admin_prompt}\n{request.system_prompt}"
+        elif admin_prompt:
+            effective_system_prompt = admin_prompt
+        else:
+            effective_system_prompt = request.system_prompt
+
         result = generate_text(
             message=request.message,
             max_new_tokens=request.max_new_tokens,
             temperature=request.temperature,
             top_p=request.top_p,
             do_sample=request.do_sample,
-            system_prompt= f"{admin_prompt}\n" + request.system_prompt if admin_prompt else request.system_prompt,
+            system_prompt=effective_system_prompt,
             images=request.images,
         )
         save_chat_message( # сохраняем пару сообщение юзера - ответ ии в бд
@@ -484,15 +611,67 @@ async def chat_sessions(username: Optional[str] = None, limit: int = 50) -> dict
     sessions = list_chat_sessions(STATE.db_path, username=username, limit=safe_limit) # берем из бд все сессии юзера
     return {"count": len(sessions), "items": sessions}
 
-@app.get("/admin/update-prompt", tags=["admin"])
-async def update_prompt(new_prompt: str, user_type: str) -> None:
-    if user_type == "user":
-        return HTTPException(status_code=403, detail="Forbidden action for non-admin account")
-    
+@app.post("/admin/update-prompt", tags=["admin"], responses={403: {"description": "Forbidden action for non-admin account"}})
+async def update_prompt(payload: AdminPromptRequest) -> dict[str, str]:
+    if payload.user_role != "admin":
+        raise HTTPException(status_code=403, detail="Forbidden action for non-admin account")
+
     global admin_prompt
-    admin_prompt = new_prompt.strip()
-    
-    return None
+    admin_prompt = payload.new_prompt.strip()
+
+    return {"status": "success", "prompt": admin_prompt}
+
+
+@app.get("/users", tags=["users"])
+async def get_users() -> dict[str, Any]:
+    users = list_users(STATE.db_path)
+    return {"count": len(users), "items": users}
+
+
+@app.post("/users", tags=["users"], responses={400: {"description": "Invalid data"}, 403: {"description": "Forbidden action for non-admin account"}, 409: {"description": "Username already exists"}})
+async def create_user_endpoint(payload: UserCreateRequest) -> dict[str, Any]:
+    if payload.user_role != "admin":
+        raise HTTPException(status_code=403, detail="Forbidden action for non-admin account")
+    clean_role = (payload.role or "user").strip().lower()
+    if clean_role not in {"user", "admin"}:
+        raise HTTPException(status_code=400, detail="Role must be 'user' or 'admin'")
+    clean_username = payload.username.strip()
+    if not clean_username:
+        raise HTTPException(status_code=400, detail="Username must not be empty")
+    try:
+        user = create_user(STATE.db_path, clean_username, clean_role)
+    except sqlite3.IntegrityError as e:
+        raise HTTPException(status_code=409, detail="Username already exists") from e
+    return {"status": "success", "item": user}
+
+
+@app.put("/users/{user_id}", tags=["users"], responses={400: {"description": "Invalid data"}, 403: {"description": "Forbidden action for non-admin account"}, 404: {"description": "User not found"}, 409: {"description": "Username already exists"}})
+async def update_user_endpoint(user_id: int, payload: UserUpdateRequest) -> dict[str, Any]:
+    if payload.user_role != "admin":
+        raise HTTPException(status_code=403, detail="Forbidden action for non-admin account")
+    clean_role = payload.role.strip().lower() if payload.role is not None else None
+    if clean_role is not None and clean_role not in {"user", "admin"}:
+        raise HTTPException(status_code=400, detail="Role must be 'user' or 'admin'")
+    clean_username = payload.username.strip() if payload.username is not None else None
+    if clean_username is not None and not clean_username:
+        raise HTTPException(status_code=400, detail="Username must not be empty")
+    try:
+        updated = update_user(STATE.db_path, user_id, clean_username, clean_role)
+    except sqlite3.IntegrityError as e:
+        raise HTTPException(status_code=409, detail="Username already exists") from e
+    if not updated:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"status": "success", "item": updated}
+
+
+@app.delete("/users/{user_id}", tags=["users"], responses={403: {"description": "Forbidden action for non-admin account"}, 404: {"description": "User not found"}})
+async def delete_user_endpoint(user_id: int, user_role: str = "user") -> dict[str, str]:
+    if user_role != "admin":
+        raise HTTPException(status_code=403, detail="Forbidden action for non-admin account")
+    deleted = delete_user(STATE.db_path, user_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"status": "success"}
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="AI сервер с поддержкой туннеля Cloudflare ")
@@ -512,6 +691,7 @@ def main() -> None:
 
     STATE.db_path = args.db_path
     init_chat_db(STATE.db_path)
+    init_users_db(STATE.db_path)
     load_model(args.model_path, args.base_model, args.load_in_4bit)
 
     if not args.no_tunnel:
