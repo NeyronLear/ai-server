@@ -91,8 +91,8 @@ app.add_middleware(
 
 # ---------- Chat history database ----------
 def init_chat_db(db_path: str) -> None:
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
+    with sqlite3.connect(db_path) as conn: # conn — есть соединение с нашей бд
+        conn.execute( # ввод команды — есть передача команды в sql
             """
             CREATE TABLE IF NOT EXISTS chat_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -105,7 +105,7 @@ def init_chat_db(db_path: str) -> None:
             )
             """
         )
-        conn.commit()
+        conn.commit() # исполняем введенную команду
 
 
 def save_chat_message(
@@ -127,9 +127,9 @@ def save_chat_message(
                 ai_response,
                 generation_settings
             ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
+            """, # ? — есть значение, подставляемое в команду из второго параметра execute()
             (
-                datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                datetime.now().isoformat(timespec="seconds") + "Z",
                 username or "Пользователь",
                 session_id or "default",
                 user_message,
@@ -142,7 +142,7 @@ def save_chat_message(
 
 def get_chat_history(db_path: str, session_id: str, limit: int = 100) -> list[dict[str, Any]]:
     with sqlite3.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = sqlite3.Row # Row — есть итератор бд по строкам
         cursor = conn.execute(
             """
             SELECT id, timestamp, username, session_id, user_message, ai_response, generation_settings
@@ -153,8 +153,8 @@ def get_chat_history(db_path: str, session_id: str, limit: int = 100) -> list[di
             """,
             (session_id, limit),
         )
-        rows = cursor.fetchall()
-    return [dict(row) for row in rows]
+        rows = cursor.fetchall() # fetchall() — есть вывод списка строк, подходящих запросу поиска
+    return [dict(row) for row in rows] # как я понимаю, строка в бд — есть словарь питона. не знаю зачем здесь открытое объявление dict
 
 
 def list_chat_sessions(
@@ -169,16 +169,16 @@ def list_chat_sessions(
             MAX(timestamp) AS last_timestamp,
             COUNT(*) AS messages_count
         FROM chat_history
-    """
+    """ # данный запрос — есть выбор строки с session_id, наименьшим user_message (пока не знаю как это работает) и наибольшим timestamp (последнее по времени) 
     params: list[Any] = []
     if username:
-        base_query += " WHERE username = ?"
+        base_query += " WHERE username = ?" # с нужным username
         params.append(username)
     base_query += """
         GROUP BY session_id
         ORDER BY last_timestamp DESC
         LIMIT ?
-    """
+    """ # группируем по session_id — получается несколько строк, где будут самые первые сообщения в сессии (по факту group by — есть выбор наменьшего в нашем случае в каждой группе)
     params.append(limit)
 
     with sqlite3.connect(db_path) as conn:
@@ -449,7 +449,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
             system_prompt=request.system_prompt,
             images=request.images,
         )
-        save_chat_message(
+        save_chat_message( # сохраняем пару сообщение юзера - ответ ии в бд
             db_path=STATE.db_path,
             username=request.username or "Пользователь",
             session_id=request.session_id or "default",
@@ -473,14 +473,14 @@ async def chat(request: ChatRequest) -> ChatResponse:
 @app.get("/chat/history/{session_id}", tags=["chat"])
 async def chat_history(session_id: str, limit: int = 100) -> dict[str, Any]:
     safe_limit = max(1, min(limit, 500))
-    history = get_chat_history(STATE.db_path, session_id, safe_limit)
+    history = get_chat_history(STATE.db_path, session_id, safe_limit) # берем из бд истортю сообщений нужной сессии
     return {"session_id": session_id, "count": len(history), "items": history}
 
 
 @app.get("/chat/sessions", tags=["chat"])
 async def chat_sessions(username: Optional[str] = None, limit: int = 50) -> dict[str, Any]:
     safe_limit = max(1, min(limit, 200))
-    sessions = list_chat_sessions(STATE.db_path, username=username, limit=safe_limit)
+    sessions = list_chat_sessions(STATE.db_path, username=username, limit=safe_limit) # берем из бд все сессии юзера
     return {"count": len(sessions), "items": sessions}
 
 
@@ -497,7 +497,7 @@ def main() -> None:
     parser.add_argument("--load-in-4bit", action="store_true", default=False, help="Загрузка модели в 4-ех битной квантизации")
     parser.add_argument("--no-tunnel", action="store_true", help="Отключение запуска туннеля")
     parser.add_argument("--reload", action="store_true", help="Включение перезагрузки uvicorn")
-    parser.add_argument("--db-path", default="chat_history.db", help="Путь к SQLite базе истории чатов")
+    parser.add_argument("--db-path", default="chat_history.db", help="Путь к SQLite базе истории чатов") # если файл не существует - автоматически создает
     args = parser.parse_args()
 
     STATE.db_path = args.db_path
