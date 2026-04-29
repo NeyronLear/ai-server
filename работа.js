@@ -353,16 +353,37 @@
             }
         }
         
-        function saveAdminServerSettings() {
-            currentSettings.serverUrl = adminServerUrl.value.trim();
-            currentSettings.systemPrompt = adminSystemPrompt.value.trim();
-            saveSettings();
-            
-            // Update regular settings panel
-            SERVER_URL.value = currentSettings.serverUrl;
-            systemPrompt.value = currentSettings.systemPrompt;
-            
-            alert('Настройки сервера сохранены!');
+        async function saveAdminServerSettings() {
+            const newGlobalPrompt = adminSystemPrompt.value.trim();
+
+            try {
+                const requestBody = {
+                    new_prompt = newGlobalPrompt,
+                    user = currentUser.role
+                };
+
+                // Save on server
+                const response = await fetch('${serverURL}/admin/update-prompt', {
+                    method: 'POST',
+                    headers: { 'Content-Type' : 'application/json'},
+                    body: JSON.stringify(requestBody)
+                });
+
+                if (response.ok) {
+                    // Update local interface
+                    currentSettings.serverUrl = adminServerUrl.value.trim();
+                    currentSettings.systemPrompt = adminSystemPrompt.value.trim();
+                    saveSettings();
+                
+                    // Update regular settings panel
+                    SERVER_URL.value = currentSettings.serverUrl;
+                
+                    alert('Настройки сервера сохранены!');
+                }
+            } catch (error) {
+                console.error('Шайтан машина не делать:', error)
+                alert('Не удалось сохранить настройки, зайдите в консоль для подробной информации')
+            }
         }
         
         function adminLogoutFunc() {
