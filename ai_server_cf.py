@@ -446,7 +446,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
             temperature=request.temperature,
             top_p=request.top_p,
             do_sample=request.do_sample,
-            system_prompt=request.system_prompt,
+            system_prompt= f"{admin_prompt}\n" + request.system_prompt if admin_prompt else request.system_prompt,
             images=request.images,
         )
         save_chat_message( # сохраняем пару сообщение юзера - ответ ии в бд
@@ -483,6 +483,15 @@ async def chat_sessions(username: Optional[str] = None, limit: int = 50) -> dict
     sessions = list_chat_sessions(STATE.db_path, username=username, limit=safe_limit) # берем из бд все сессии юзера
     return {"count": len(sessions), "items": sessions}
 
+@app.get("/admin/update-prompt", tags=["admin"])
+async def update_prompt(new_prompt: str, user_type: str) -> None:
+    if user_type == "user":
+        return HTTPException(status_code=403, detail="Forbidden action for non-admin account")
+    
+    global admin_prompt
+    admin_prompt = new_prompt.strip()
+    
+    return None
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="AI сервер с поддержкой туннеля Cloudflare ")
