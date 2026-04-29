@@ -129,7 +129,7 @@ def save_chat_message(
             ) VALUES (?, ?, ?, ?, ?, ?)
             """, # ? — есть значение, подставляемое в команду из второго параметра execute()
             (
-                datetime.now().isoformat(timespec="seconds") + "Z",
+                datetime.now(datetime.timezone.utc).isoformat(timespec="seconds") + "Z",
                 username or "Пользователь",
                 session_id or "default",
                 user_message,
