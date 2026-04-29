@@ -13,6 +13,7 @@
     --load-in-4bit <bool> - загрузка в 4-ех битной квантизации для оптимизации (false по умолчанию)
     --no-tunnel <bool> - отключение запуска туннеля cloudflare
     --reload <bool> - включает перезагрузку uvicorn
+    --db-path <str> - изменить нзвание бд историй чатов
 """
 
 import argparse
