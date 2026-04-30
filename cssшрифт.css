@@ -489,11 +489,11 @@ body::before {
     box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.1);
 }
 
-.admin-only {
+.admin-password {
     display: none;
 }
 
-.admin-only.visible {
+.admin-password.visible {
     display: flex;
 }
 
