@@ -1,5 +1,7 @@
 // Configuration - Update these to match your Python server
 const API_ENDPOINT = "/chat"; // Change endpoint if needed
+const STREAM_ENDPOINT = "/chat/stream";
+const STOP_ENDPOINT = "/chat/stop";
 const LOGIN_ENDPOINT = "/auth/login";
 const ADMIN_PASSWORD = "admin123"; // Default admin password - change in production
 const ADMIN_LOGIN = "bebra";
@@ -61,7 +63,11 @@ const temperatureSlider = document.getElementById("temperatureSlider");
 const temperatureValue = document.getElementById("temperatureValue");
 const topPSlider = document.getElementById("topPSlider");
 const topPValue = document.getElementById("topPValue");
+const maxTokensSlider = document.getElementById("maxTokensSlider");
+const maxTokensValue = document.getElementById("maxTokensValue");
+const hideThinkToggle = document.getElementById("hideThinkToggle");
 const resetSettings = document.getElementById("resetSettings");
+const stopButton = document.getElementById("stopButton");
 
 // Image state
 let uploadedImages = []; // Array of {base64, preview}
@@ -72,6 +78,8 @@ let currentSettings = {
   systemPrompt: "",
   temperature: 0.7,
   topP: 0.9,
+  maxTokens: 512,
+  hideThink: true,
 };
 
 // User state
@@ -88,6 +96,10 @@ let chatSessions = [];
 
 // Users database (stored on backend server)
 let usersDatabase = [];
+let loginInProgress = false;
+let activeRequestController = null;
+let activeRequestId = null;
+let heartbeatTimer = null;
 
 // Load settings from localStorage
 function loadSettings() {
@@ -99,6 +111,8 @@ function loadSettings() {
       systemPrompt.value = currentSettings.systemPrompt || "";
       temperatureSlider.value = currentSettings.temperature || 0.7;
       topPSlider.value = currentSettings.topP || 0.9;
+      maxTokensSlider.value = currentSettings.maxTokens || 512;
+      hideThinkToggle.checked = currentSettings.hideThink !== false;
       updateSliderValues();
     } catch (e) {
       console.error("Error loading settings:", e);
@@ -189,12 +203,20 @@ function showLoginScreen() {
   toggleLoginMode();
   // Clear current user data when showing login
   currentUser = { username: "Пользователь", role: "user" };
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
 }
 
 // Show chat interface
 function showChatInterface() {
   loginScreen.style.display = "none";
   appContainer.style.display = "flex";
+  currentSessionId = `chat_${Date.now()}`;
+  chatSessions = [];
+  renderWelcomeMessage();
+  renderChatList();
   headerUser.textContent = currentUser.username;
   userAvatar.textContent = currentUser.username.charAt(0).toUpperCase();
 
@@ -214,6 +236,7 @@ function showChatInterface() {
 
   testConnection();
   loadChatSessions();
+  startHeartbeat();
   chatInput.focus();
 }
 
@@ -231,6 +254,7 @@ function updateSettingsByRole() {
 
 // Login function
 async function login() {
+  if (loginInProgress) return;
   const mode = loginMode.value;
   const username = usernameInput.value.trim();
   const password =
@@ -255,6 +279,7 @@ async function login() {
       role: "admin",
     };
     showChatInterface();
+    return;
   }
 
   const serverUrl = getServerBaseUrl();
@@ -263,6 +288,7 @@ async function login() {
     return;
   }
 
+  loginInProgress = true;
   loginButton.disabled = true;
   try {
     const response = await fetch(`${serverUrl}${LOGIN_ENDPOINT}`, {
@@ -301,6 +327,7 @@ async function login() {
     console.error("Login error:", error);
     window.alert(error.message || "Не удалось выполнить вход");
   } finally {
+    loginInProgress = false;
     loginButton.disabled = false;
   }
 }
@@ -308,6 +335,10 @@ async function login() {
 // Logout function
 function logout() {
   if (confirm("Вы уверены, что хотите выйти?")) {
+    if (activeRequestController) {
+      activeRequestController.abort();
+      activeRequestController = null;
+    }
     clearAllUserData();
     usernameInput.value = "";
     adminPassword.value = "";
@@ -356,7 +387,23 @@ async function loadAdminData() {
 
   // Update stats
   totalUsers.textContent = usersDatabase.length;
-  activeUsers.textContent = 1; // Current user
+  try {
+    const serverUrl = getServerBaseUrl();
+    if (!serverUrl) {
+      throw new Error("URL сервера не настроен");
+    }
+    const response = await fetch(
+      `${serverUrl}/admin/stats?user_role=${encodeURIComponent(currentUser.role)}`,
+    );
+    if (!response.ok) {
+      throw new Error(`Ошибка статистики: ${response.status}`);
+    }
+    const stats = await response.json();
+    activeUsers.textContent = String(stats.active_users ?? 0);
+  } catch (error) {
+    console.error("Error loading stats:", error);
+    activeUsers.textContent = "0";
+  }
 }
 
 function renderUserList() {
@@ -532,6 +579,8 @@ function saveSettings() {
     systemPrompt: systemPrompt.value,
     temperature: parseFloat(temperatureSlider.value),
     topP: parseFloat(topPSlider.value),
+    maxTokens: parseInt(maxTokensSlider.value, 10),
+    hideThink: hideThinkToggle.checked,
   };
   localStorage.setItem("aiChatSettings", JSON.stringify(currentSettings));
 }
@@ -540,6 +589,84 @@ function saveSettings() {
 function updateSliderValues() {
   temperatureValue.textContent = temperatureSlider.value;
   topPValue.textContent = topPSlider.value;
+  maxTokensValue.textContent = maxTokensSlider.value;
+}
+
+function parseThinkBlocks(text) {
+  const source = String(text || "");
+  const blocks = [];
+  const regex = /<think>([\s\S]*?)<\/think>/gi;
+  let match;
+  while ((match = regex.exec(source)) !== null) {
+    blocks.push(match[1].trim());
+  }
+  const cleaned = source.replace(regex, "").trim();
+  return { cleaned, blocks };
+}
+
+function renderRichText(target, text) {
+  const rawText = String(text || "");
+  if (window.marked) {
+    target.innerHTML = window.marked.parse(rawText);
+  } else {
+    target.textContent = rawText;
+  }
+  if (window.renderMathInElement) {
+    window.renderMathInElement(target, {
+      delimiters: [
+        { left: "$$", right: "$$", display: true },
+        { left: "$", right: "$", display: false },
+      ],
+      throwOnError: false,
+    });
+  }
+}
+
+function renderAssistantContent(contentDiv, content) {
+  const { cleaned, blocks } = parseThinkBlocks(content);
+  contentDiv.innerHTML = "";
+  if (cleaned) {
+    const textPart = document.createElement("div");
+    textPart.className = "message-text";
+    renderRichText(textPart, cleaned);
+    contentDiv.appendChild(textPart);
+  }
+  blocks.forEach((thinkText, idx) => {
+    const details = document.createElement("details");
+    details.className = "think-block";
+    details.open = !hideThinkToggle.checked;
+
+    const summary = document.createElement("summary");
+    summary.textContent = `<think> Размышления ${idx + 1}`;
+
+    const thinkBody = document.createElement("div");
+    thinkBody.className = "think-content";
+    renderRichText(thinkBody, thinkText);
+
+    details.appendChild(summary);
+    details.appendChild(thinkBody);
+    contentDiv.appendChild(details);
+  });
+}
+
+function createAssistantMessageShell() {
+  const messageDiv = document.createElement("div");
+  messageDiv.className = "message ai";
+
+  const contentDiv = document.createElement("div");
+  contentDiv.className = "message-content";
+  contentDiv.textContent = "";
+
+  const timeDiv = document.createElement("div");
+  timeDiv.className = "message-time";
+  timeDiv.textContent = "Ваш Архимед";
+
+  messageDiv.appendChild(contentDiv);
+  messageDiv.appendChild(timeDiv);
+  chatMessages.appendChild(messageDiv);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+
+  return { messageDiv, contentDiv };
 }
 
 // Auto-resize textarea
@@ -564,8 +691,25 @@ function imageToBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
-      const base64 = reader.result;
-      resolve(base64);
+      const img = new Image();
+      img.onload = () => {
+        const maxSide = 1280;
+        const ratio = Math.min(1, maxSide / Math.max(img.width, img.height));
+        const width = Math.max(1, Math.round(img.width * ratio));
+        const height = Math.max(1, Math.round(img.height * ratio));
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          reject(new Error("Не удалось обработать изображение"));
+          return;
+        }
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL("image/jpeg", 0.85));
+      };
+      img.onerror = reject;
+      img.src = String(reader.result);
     };
     reader.onerror = reject;
     reader.readAsDataURL(file);
@@ -634,8 +778,11 @@ function addMessage(content, isUser, images = null) {
   contentDiv.className = "message-content";
 
   if (content) {
-    const textNode = document.createTextNode(content);
-    contentDiv.appendChild(textNode);
+    if (isUser) {
+      contentDiv.textContent = String(content);
+    } else {
+      renderAssistantContent(contentDiv, String(content));
+    }
   }
 
   if (images && images.length > 0) {
@@ -750,6 +897,10 @@ async function loadChatSessions() {
     }
     const data = await response.json();
     chatSessions = Array.isArray(data.items) ? data.items : [];
+    if (!chatSessions.length) {
+      currentSessionId = `chat_${Date.now()}`;
+      renderWelcomeMessage();
+    }
     renderChatList();
   } catch (error) {
     console.error("Error loading chat sessions:", error);
@@ -764,7 +915,7 @@ async function loadSessionIntoChat(sessionId) {
 
   try {
     const response = await fetch(
-      `${serverUrl}/chat/history/${encodeURIComponent(sessionId)}?limit=300`,
+      `${serverUrl}/chat/history/${encodeURIComponent(sessionId)}?limit=300&username=${encodeURIComponent(currentUser.username || "Пользователь")}`,
     );
     if (!response.ok) {
       throw new Error(`Ошибка загрузки истории: ${response.status}`);
@@ -837,21 +988,29 @@ async function sendMessage() {
   // Disable input and send button
   chatInput.disabled = true;
   sendButton.disabled = true;
+  stopButton.style.display = "inline-flex";
   imageToggleButton.disabled = true;
 
   // Show typing indicator
   showTypingIndicator(true);
+  const assistantShell = createAssistantMessageShell();
+  let streamedResponse = "";
+  let donePayload = null;
 
   try {
+    activeRequestController = new AbortController();
+    activeRequestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
     // Prepare request body
     const requestBody = {
       message: message || "",
       temperature: parseFloat(temperatureSlider.value),
       top_p: parseFloat(topPSlider.value),
+      max_new_tokens: parseInt(maxTokensSlider.value, 10),
       system_prompt: systemPrompt.value.trim() || null,
       do_sample: true,
       username: currentUser.username || "Пользователь",
       session_id: currentSessionId,
+      request_id: activeRequestId,
     };
 
     // Add images if any
@@ -865,26 +1024,61 @@ async function sendMessage() {
       throw new Error("URL сервера не настроен");
     }
 
-    const response = await fetch(`${serverUrl}${API_ENDPOINT}`, {
+    const response = await fetch(`${serverUrl}${STREAM_ENDPOINT}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
       body: JSON.stringify(requestBody),
+      signal: activeRequestController.signal,
     });
 
     if (!response.ok) {
       throw new Error(`Server error: ${response.status}`);
     }
 
-    const data = await response.json();
+    if (!response.body) {
+      throw new Error("Пустой поток ответа от сервера");
+    }
 
-    // Hide typing indicator
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let streamBuffer = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      streamBuffer += decoder.decode(value, { stream: true });
+      const events = streamBuffer.split("\n\n");
+      streamBuffer = events.pop() || "";
+
+      for (const rawEvent of events) {
+        const lines = rawEvent
+          .split("\n")
+          .map((line) => line.trim())
+          .filter((line) => line.startsWith("data:"));
+        if (!lines.length) continue;
+        const payloadText = lines.map((line) => line.slice(5).trim()).join("");
+        if (!payloadText) continue;
+        const payload = JSON.parse(payloadText);
+
+        if (payload.type === "token") {
+          showTypingIndicator(false);
+          streamedResponse += payload.token || "";
+          assistantShell.contentDiv.textContent = streamedResponse;
+          chatMessages.scrollTop = chatMessages.scrollHeight;
+        } else if (payload.type === "done") {
+          donePayload = payload;
+        } else if (payload.type === "error") {
+          throw new Error(payload.message || "Ошибка генерации");
+        }
+      }
+    }
+
     showTypingIndicator(false);
-
-    // Add AI response to chat
-    const aiResponse = data.response || "No response received";
-    addMessage(aiResponse, false);
+    const aiResponse =
+      donePayload?.response || streamedResponse || "No response received";
+    renderAssistantContent(assistantShell.contentDiv, aiResponse);
     await loadChatSessions();
 
     updateServerStatus(true);
@@ -895,15 +1089,60 @@ async function sendMessage() {
     showTypingIndicator(false);
 
     // Show error message
-    addMessage(`Ошибка: ${error.message}`, false);
+    const isAbort = error && error.name === "AbortError";
+    const abortText = "Генерация остановлена пользователем.";
+    assistantShell.contentDiv.textContent = "";
+    renderAssistantContent(
+      assistantShell.contentDiv,
+      isAbort ? streamedResponse || abortText : `Ошибка: ${error.message}`,
+    );
     updateServerStatus(false);
   } finally {
+    activeRequestController = null;
+    activeRequestId = null;
     // Re-enable input and send button
     chatInput.disabled = false;
     sendButton.disabled = false;
+    stopButton.style.display = "none";
     imageToggleButton.disabled = false;
     chatInput.focus();
   }
+}
+
+function stopGeneration() {
+  const serverUrl = getServerBaseUrl();
+  if (serverUrl && activeRequestId) {
+    fetch(`${serverUrl}${STOP_ENDPOINT}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ request_id: activeRequestId }),
+    }).catch((error) => console.debug("Stop request failed:", error));
+  }
+  if (activeRequestController) {
+    activeRequestController.abort();
+  }
+}
+
+async function sendHeartbeat() {
+  const serverUrl = getServerBaseUrl();
+  if (!serverUrl || !currentUser?.username) return;
+  try {
+    await fetch(`${serverUrl}/auth/heartbeat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: currentUser.username }),
+    });
+  } catch (error) {
+    console.debug("Heartbeat failed:", error);
+  }
+}
+
+function startHeartbeat() {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+  }
+  sendHeartbeat();
+  heartbeatTimer = setInterval(sendHeartbeat, 30000);
 }
 
 // Test server connection on page load
@@ -966,10 +1205,17 @@ topPSlider.addEventListener("input", () => {
   saveSettings();
 });
 
+maxTokensSlider.addEventListener("input", () => {
+  updateSliderValues();
+  saveSettings();
+});
+
 // Save settings when system prompt and URL changes
 systemPrompt.addEventListener("input", saveSettings);
 SERVER_URL.addEventListener("input", saveSettings);
+hideThinkToggle.addEventListener("change", saveSettings);
 serverButton.addEventListener("click", testConnection);
+stopButton.addEventListener("click", stopGeneration);
 
 // Reset settings
 resetSettings.addEventListener("click", () => {
@@ -979,11 +1225,15 @@ resetSettings.addEventListener("click", () => {
       systemPrompt: "",
       temperature: 0.7,
       topP: 0.9,
+      maxTokens: 512,
+      hideThink: true,
     };
     SERVER_URL.value = "";
     systemPrompt.value = "";
     temperatureSlider.value = 0.7;
     topPSlider.value = 0.9;
+    maxTokensSlider.value = 512;
+    hideThinkToggle.checked = true;
     updateSliderValues();
     saveSettings();
   }

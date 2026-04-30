@@ -17,6 +17,7 @@
 """
 
 import argparse
+import asyncio
 import json
 import os
 import queue
@@ -26,10 +27,12 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import uuid
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Any, Optional
 import logging
+import time
 
 import bcrypt
 
@@ -37,6 +40,7 @@ import torch
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 
@@ -51,6 +55,7 @@ class ChatRequest(BaseModel):
     images: Optional[list[str]] = None
     username: Optional[str] = Field(default="Пользователь", description="Имя пользователя")
     session_id: Optional[str] = Field(default="default", description="ID сессии чата")
+    request_id: Optional[str] = Field(default=None, description="ID запроса генерации")
 
 
 class ChatResponse(BaseModel):
@@ -91,6 +96,14 @@ class LoginRequest(BaseModel):
     mode: str = Field(default="user", description="Режим входа: user/admin")
 
 
+class HeartbeatRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=120)
+
+
+class StopGenerationRequest(BaseModel):
+    request_id: str = Field(min_length=1, max_length=120)
+
+
 # ---------- Global runtime state ----------
 @dataclass # автоматически создают __init__ для класса, в котором инициализирует данные. по сути генератор шаблона на лету
 class RuntimeState:
@@ -104,6 +117,10 @@ class RuntimeState:
 
 STATE = RuntimeState()
 admin_prompt = ""
+ACTIVE_USERS: dict[str, float] = {}
+ACTIVE_USERS_TTL_SECONDS = 120
+ACTIVE_GENERATIONS: dict[str, threading.Event] = {}
+ACTIVE_GENERATIONS_LOCK = threading.Lock()
 
 
 # ---------- FastAPI app ----------
@@ -303,19 +320,36 @@ def save_chat_message(
         conn.commit()
 
 
-def get_chat_history(db_path: str, session_id: str, limit: int = 100) -> list[dict[str, Any]]:
+def get_chat_history(
+    db_path: str,
+    session_id: str,
+    limit: int = 100,
+    username: Optional[str] = None,
+) -> list[dict[str, Any]]:
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row # Row — есть итератор бд по строкам
-        cursor = conn.execute(
-            """
-            SELECT id, timestamp, username, session_id, user_message, ai_response, generation_settings
-            FROM chat_history
-            WHERE session_id = ?
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (session_id, limit),
-        )
+        if username:
+            cursor = conn.execute(
+                """
+                SELECT id, timestamp, username, session_id, user_message, ai_response, generation_settings
+                FROM chat_history
+                WHERE session_id = ? AND username = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (session_id, username, limit),
+            )
+        else:
+            cursor = conn.execute(
+                """
+                SELECT id, timestamp, username, session_id, user_message, ai_response, generation_settings
+                FROM chat_history
+                WHERE session_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (session_id, limit),
+            )
         rows = cursor.fetchall() # fetchall() — есть вывод списка строк, подходящих запросу поиска
     return [dict(row) for row in rows] # как я понимаю, строка в бд — есть словарь питона. не знаю зачем здесь открытое объявление dict
 
@@ -435,24 +469,63 @@ def _build_chat_messages(
     return messages
 
 
-def generate_text(
+def _compose_context_messages(
+    db_path: str,
+    username: str,
+    session_id: str,
+    limit: int = 12,
+) -> list[dict[str, Any]]:
+    rows = get_chat_history(
+        db_path=db_path,
+        session_id=session_id,
+        limit=max(1, min(limit, 50)),
+        username=username,
+    )
+    if not rows:
+        return []
+    rows.reverse()
+    context_messages: list[dict[str, Any]] = []
+    for row in rows:
+        user_text = (row.get("user_message") or "").strip()
+        ai_text = (row.get("ai_response") or "").strip()
+        if user_text:
+            context_messages.append(
+                {"role": "user", "content": [{"type": "text", "text": user_text}]}
+            )
+        if ai_text:
+            context_messages.append(
+                {"role": "assistant", "content": [{"type": "text", "text": ai_text}]}
+            )
+    return context_messages
+
+
+def _build_effective_prompt(user_system_prompt: Optional[str]) -> Optional[str]:
+    if admin_prompt and user_system_prompt:
+        return f"{admin_prompt}\n{user_system_prompt}"
+    if admin_prompt:
+        return admin_prompt
+    return user_system_prompt
+
+
+def _prepare_model_inputs(
     message: str,
-    max_new_tokens: int,
-    temperature: float,
-    top_p: float,
-    do_sample: bool,
     system_prompt: Optional[str],
     images: Optional[list[str]],
-) -> str:
-    if STATE.model is None or STATE.tokenizer is None:
-        raise RuntimeError("Модель не загружена.")
-
+    context_messages: Optional[list[dict[str, Any]]] = None,
+) -> dict[str, Any]:
+    if STATE.tokenizer is None:
+        raise RuntimeError("Токенизатор не загружен.")
     tokenizer = STATE.tokenizer
-    model = STATE.model
-
     messages = _build_chat_messages(
         message, system_prompt, images, multimodal_content=True
     )
+    if context_messages:
+        if messages and messages[0].get("role") == "system":
+            system_msg = messages[0]
+            user_tail = messages[1:]
+            messages = [system_msg, *context_messages, *user_tail]
+        else:
+            messages = [*context_messages, *messages]
     try:
         inputs = tokenizer.apply_chat_template(
             messages,
@@ -461,10 +534,15 @@ def generate_text(
             return_dict=True,
             return_tensors="pt",
         )
-    except(TypeError, ValueError):
+    except (TypeError, ValueError):
         text_messages = _build_chat_messages(
             message, system_prompt, images=None, multimodal_content=False
         )
+        if context_messages:
+            if text_messages and text_messages[0].get("role") == "system":
+                text_messages = [text_messages[0], *context_messages, *text_messages[1:]]
+            else:
+                text_messages = [*context_messages, *text_messages]
         inputs = tokenizer.apply_chat_template(
             text_messages,
             add_generation_prompt=True,
@@ -472,7 +550,31 @@ def generate_text(
             return_dict=True,
             return_tensors="pt",
         )
-    inputs = {k: v.to(STATE.device) for k, v in inputs.items()}
+    return {k: v.to(STATE.device) for k, v in inputs.items()}
+
+
+def generate_text(
+    message: str,
+    max_new_tokens: int,
+    temperature: float,
+    top_p: float,
+    do_sample: bool,
+    system_prompt: Optional[str],
+    images: Optional[list[str]],
+    context_messages: Optional[list[dict[str, Any]]] = None,
+) -> str:
+    if STATE.model is None or STATE.tokenizer is None:
+        raise RuntimeError("Модель не загружена.")
+
+    tokenizer = STATE.tokenizer
+    model = STATE.model
+
+    inputs = _prepare_model_inputs(
+        message=message,
+        system_prompt=system_prompt,
+        images=images,
+        context_messages=context_messages,
+    )
 
     with torch.no_grad():
         outputs = model.generate(
@@ -603,22 +705,23 @@ async def chat(request: ChatRequest) -> ChatResponse:
         raise HTTPException(status_code=503, detail="Model is not loaded.")
 
     try:
-        effective_system_prompt = None
-        if admin_prompt and request.system_prompt:
-            effective_system_prompt = f"{admin_prompt}\n{request.system_prompt}"
-        elif admin_prompt:
-            effective_system_prompt = admin_prompt
-        else:
-            effective_system_prompt = request.system_prompt
+        effective_system_prompt = _build_effective_prompt(request.system_prompt)
 
+        context_messages = _compose_context_messages(
+            db_path=STATE.db_path,
+            username=request.username or "Пользователь",
+            session_id=request.session_id or "default",
+            limit=12,
+        )
         result = generate_text(
             message=request.message,
-            max_new_tokens=10000,
+            max_new_tokens=request.max_new_tokens,
             temperature=request.temperature,
             top_p=request.top_p,
             do_sample=request.do_sample,
             system_prompt=effective_system_prompt,
             images=request.images,
+            context_messages=context_messages,
         )
         save_chat_message( # сохраняем пару сообщение юзера - ответ ии в бд
             db_path=STATE.db_path,
@@ -641,10 +744,155 @@ async def chat(request: ChatRequest) -> ChatResponse:
         raise HTTPException(status_code=500, detail=f"Generation failed: {e}") from e
 
 
+@app.post("/chat/stop", tags=["chat"])
+async def stop_chat_generation(payload: StopGenerationRequest) -> dict[str, str]:
+    with ACTIVE_GENERATIONS_LOCK:
+        stop_event = ACTIVE_GENERATIONS.get(payload.request_id)
+    if stop_event is None:
+        return {"status": "not_found"}
+    stop_event.set()
+    return {"status": "stopping"}
+
+
+@app.post("/chat/stream", tags=["chat"])
+async def chat_stream(request: ChatRequest) -> StreamingResponse:
+    if STATE.model is None or STATE.tokenizer is None:
+        raise HTTPException(status_code=503, detail="Model is not loaded.")
+    request_id = (request.request_id or str(uuid.uuid4())).strip()
+    if not request_id:
+        raise HTTPException(status_code=400, detail="request_id must not be empty")
+
+    context_messages = _compose_context_messages(
+        db_path=STATE.db_path,
+        username=request.username or "Пользователь",
+        session_id=request.session_id or "default",
+        limit=12,
+    )
+    effective_system_prompt = _build_effective_prompt(request.system_prompt)
+    inputs = _prepare_model_inputs(
+        message=request.message,
+        system_prompt=effective_system_prompt,
+        images=request.images,
+        context_messages=context_messages,
+    )
+
+    try:
+        from transformers import StoppingCriteria, StoppingCriteriaList, TextIteratorStreamer  # type: ignore
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Streaming unavailable: {e}") from e
+
+    class _StopOnEventCriteria(StoppingCriteria):
+        def __init__(self, stop_event: threading.Event) -> None:
+            self._stop_event = stop_event
+
+        def __call__(self, input_ids: Any, scores: Any, **kwargs: Any) -> bool:
+            return self._stop_event.is_set()
+
+    stop_event = threading.Event()
+    with ACTIVE_GENERATIONS_LOCK:
+        ACTIVE_GENERATIONS[request_id] = stop_event
+
+    tokenizer = STATE.tokenizer
+    model = STATE.model
+    streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+    generation_error: dict[str, Optional[str]] = {"message": None}
+
+    def _run_generation() -> None:
+        try:
+            with torch.no_grad():
+                model.generate(
+                    **inputs,
+                    max_new_tokens=request.max_new_tokens,
+                    temperature=request.temperature,
+                    top_p=request.top_p,
+                    do_sample=request.do_sample,
+                    pad_token_id=getattr(tokenizer, "eos_token_id", None),
+                    streamer=streamer,
+                    stopping_criteria=StoppingCriteriaList([_StopOnEventCriteria(stop_event)]),
+                )
+        except Exception as e:
+            generation_error["message"] = str(e)
+
+    generation_thread = threading.Thread(target=_run_generation, daemon=True)
+    generation_thread.start()
+
+    async def _event_stream():
+        full_response_parts: list[str] = []
+        streamer_iterator = iter(streamer)
+        try:
+            yield f"data: {json.dumps({'type': 'start', 'request_id': request_id}, ensure_ascii=False)}\n\n"
+            while True:
+                if stop_event.is_set() and not generation_thread.is_alive():
+                    break
+                try:
+                    token_chunk = await asyncio.to_thread(next, streamer_iterator, None)
+                except StopIteration:
+                    break
+                if token_chunk is None:
+                    break
+                full_response_parts.append(token_chunk)
+                payload = {"type": "token", "token": token_chunk, "request_id": request_id}
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+            full_response = "".join(full_response_parts).strip()
+            if generation_error["message"]:
+                error_payload = {
+                    "type": "error",
+                    "message": generation_error["message"],
+                    "request_id": request_id,
+                }
+                yield f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
+                return
+
+            if full_response:
+                save_chat_message(
+                    db_path=STATE.db_path,
+                    username=request.username or "Пользователь",
+                    session_id=request.session_id or "default",
+                    user_message=request.message,
+                    ai_response=full_response,
+                    generation_settings={
+                        "max_new_tokens": request.max_new_tokens,
+                        "temperature": request.temperature,
+                        "top_p": request.top_p,
+                        "do_sample": request.do_sample,
+                        "system_prompt": request.system_prompt,
+                        "images_count": len(request.images or []),
+                        "streamed": True,
+                        "stopped": stop_event.is_set(),
+                    },
+                )
+            done_payload = {
+                "type": "done",
+                "response": full_response or "(нет ответа)",
+                "stopped": stop_event.is_set(),
+                "request_id": request_id,
+            }
+            yield f"data: {json.dumps(done_payload, ensure_ascii=False)}\n\n"
+        finally:
+            with ACTIVE_GENERATIONS_LOCK:
+                ACTIVE_GENERATIONS.pop(request_id, None)
+
+    return StreamingResponse(
+        _event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
 @app.get("/chat/history/{session_id}", tags=["chat"])
-async def chat_history(session_id: str, limit: int = 100) -> dict[str, Any]:
+async def chat_history(
+    session_id: str,
+    limit: int = 100,
+    username: Optional[str] = None,
+) -> dict[str, Any]:
     safe_limit = max(1, min(limit, 500))
-    history = get_chat_history(STATE.db_path, session_id, safe_limit) # берем из бд истортю сообщений нужной сессии
+    history = get_chat_history(
+        STATE.db_path,
+        session_id,
+        safe_limit,
+        username=username,
+    ) # берем из бд истортю сообщений нужной сессии
     return {"session_id": session_id, "count": len(history), "items": history}
 
 
@@ -696,6 +944,7 @@ async def auth_login(payload: LoginRequest) -> dict[str, Any]:
 
     if not verify_password(payload.password, user.get("password_hash")):
         raise HTTPException(status_code=401, detail="Неверный логин или пароль")
+    ACTIVE_USERS[user["username"]] = time.time()
 
     return {
         "status": "success",
@@ -707,6 +956,30 @@ async def auth_login(payload: LoginRequest) -> dict[str, Any]:
             "updated_at": user["updated_at"],
         },
     }
+
+
+@app.post("/auth/heartbeat", tags=["users"])
+async def auth_heartbeat(payload: HeartbeatRequest) -> dict[str, Any]:
+    username = payload.username.strip()
+    if not username:
+        raise HTTPException(status_code=400, detail="Username must not be empty")
+    ACTIVE_USERS[username] = time.time()
+    return {"status": "success"}
+
+
+@app.get("/admin/stats", tags=["admin"])
+async def get_admin_stats(user_role: str = "user") -> dict[str, Any]:
+    if user_role != "admin":
+        raise HTTPException(status_code=403, detail="Forbidden action for non-admin account")
+    now = time.time()
+    stale_users = [
+        username
+        for username, last_seen in ACTIVE_USERS.items()
+        if now - last_seen > ACTIVE_USERS_TTL_SECONDS
+    ]
+    for username in stale_users:
+        ACTIVE_USERS.pop(username, None)
+    return {"active_users": len(ACTIVE_USERS)}
 
 
 @app.post("/users", tags=["users"], responses={400: {"description": "Invalid data"}, 403: {"description": "Forbidden action for non-admin account"}, 409: {"description": "Username already exists"}})

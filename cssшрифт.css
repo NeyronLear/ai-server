@@ -1463,6 +1463,30 @@ body::before {
     cursor: not-allowed;
 }
 
+.stop-btn {
+    background: linear-gradient(135deg, #ff6b6b 0%, #d64545 100%);
+}
+
+.think-block {
+    margin-top: 10px;
+    padding: 8px 10px;
+    border: 1px solid #dcdcdc;
+    border-radius: 10px;
+    background: #f7f7f7;
+}
+
+.think-block summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: #5a5a5a;
+}
+
+.think-content {
+    margin-top: 8px;
+    color: #444;
+    white-space: pre-wrap;
+}
+
 .image-upload-button:hover {
     background: #f0f2ff;
     border-color: #764ba2;

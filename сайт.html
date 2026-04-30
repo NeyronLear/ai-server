@@ -4,6 +4,10 @@
     <meta charset="utf-8">
     <title>Виртуальный Архимед</title>
     <link rel="stylesheet" type="text/css" href="cssшрифт.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
 </head>
 <body>
     <script src="работа.js" defer></script>
@@ -116,6 +120,7 @@
                     <button class="image-toggle-btn" id="imageToggleButton" title="Загрузить изображение">📷</button>
                     <textarea id="chatInput" placeholder="Введите ваше сообщение..." rows="1"></textarea>
                     <button class="send-btn" id="sendButton">Отправить</button>
+                    <button class="send-btn stop-btn" id="stopButton" style="display: none;">Стоп</button>
                 </div>
             </div>
         </div>
@@ -166,6 +171,18 @@
                     <div class="setting-slider-container">
                         <input type="range" class="setting-slider" id="topPSlider" min="0" max="1" step="0.05" value="0.9"><span class="setting-value" id="topPValue">0.9</span>
                     </div>
+                </div>
+                <div class="setting-group">
+                    <label class="setting-label" for="maxTokensSlider">Max tokens</label>
+                    <div class="setting-slider-container">
+                        <input type="range" class="setting-slider" id="maxTokensSlider" min="64" max="4096" step="64" value="512"><span class="setting-value" id="maxTokensValue">512</span>
+                    </div>
+                </div>
+                <div class="setting-group">
+                    <label>
+                        <input type="checkbox" id="hideThinkToggle" checked>
+                        Скрывать размышления (`&lt;think&gt;...&lt;/think&gt;`)
+                    </label>
                 </div>
                 <button class="reset-settings" id="resetSettings">Сбросить настройки</button>
             </div>
