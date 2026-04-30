@@ -613,7 +613,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
 
         result = generate_text(
             message=request.message,
-            max_new_tokens=request.max_new_tokens,
+            max_new_tokens=10000,
             temperature=request.temperature,
             top_p=request.top_p,
             do_sample=request.do_sample,
