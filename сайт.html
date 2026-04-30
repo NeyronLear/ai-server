@@ -23,16 +23,20 @@
                         <option value="admin">Администратор</option>
                     </select>
                 </div>
-                <div class="form-group">
-                    <label for="usernameInput">Имя пользователя</label>
-                    <input type="text" id="usernameInput" placeholder="Как к вам обращаться?">
+                <div class="form-group login">
+                    <label for="usernameInput">Логин</label>
+                    <input type="text" id="usernameInput" placeholder="Введите логин">
                 </div>
-                <div class="form-group admin-only" id="adminPasswordGroup" style="display: none;">
+                <div class="form-group user-password" id="userPasswordGroup" style="display: none;">
+                    <label for="adminPassword">Пароль администратора</label>
+                    <input type="password" id="adminPassword" placeholder="Введите пароль администратора">
+                </div>
+                <div class="form-group admin-password" id="adminPasswordGroup" style="display: none;">
                     <label for="adminPassword">Пароль администратора</label>
                     <input type="password" id="adminPassword" placeholder="Введите пароль администратора">
                 </div>
                 <button class="login-button" id="loginButton">Войти</button>
-                <p class="login-footer">Вход только по имени пользователя</p>
+                <!-- <p class="login-footer">Вход только по имени пользователя</p> -->
             </div>
         </div>
     </div>
