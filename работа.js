@@ -251,8 +251,8 @@ async function login() {
     password === ADMIN_PASSWORD
   ) {
     currentUser = {
-      username: user.username,
-      role: user.role,
+      username: ADMIN_LOGIN,
+      role: "admin",
     };
     showChatInterface();
   }
