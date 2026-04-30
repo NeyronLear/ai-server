@@ -489,11 +489,11 @@ body::before {
     box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.1);
 }
 
-.user-password {
-    display: flex;
+.user-password.invisible {
+    display: none;
 }
 
-.login {
+.user-password {
     display: flex;
 }
 

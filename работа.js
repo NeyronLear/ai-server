@@ -7,6 +7,7 @@ const loginScreen = document.getElementById("loginScreen");
 const appContainer = document.getElementById("appContainer");
 const loginMode = document.getElementById("loginMode");
 const adminPasswordGroup = document.getElementById("adminPasswordGroup");
+const userPasswordGroup = document.getElementById("userPasswordGroup");
 const usernameInput = document.getElementById("usernameInput");
 const adminPassword = document.getElementById("adminPassword");
 const loginButton = document.getElementById("loginButton");
@@ -165,9 +166,11 @@ function clearAllUserData() {
 function toggleLoginMode() {
   const mode = loginMode.value;
   if (mode === "admin") {
+    userPasswordGroup.style.display = "none";
     adminPasswordGroup.style.display = "flex";
     adminPassword.focus();
   } else {
+    userPasswordGroup.style.display = "flex";
     adminPasswordGroup.style.display = "none";
     usernameInput.focus();
   }
