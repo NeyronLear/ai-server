@@ -31,6 +31,8 @@ from dataclasses import dataclass
 from typing import Any, Optional
 import logging
 
+import bcrypt
+
 import torch
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -74,6 +76,7 @@ class UserCreateRequest(BaseModel):
     username: str = Field(min_length=1, max_length=120)
     role: str = Field(default="user")
     user_role: str = Field(default="user", description="Роль того, кто выполняет действие")
+    user_password: str = Field(default="", description="Пароль созданного пользователя")
 
 
 class UserUpdateRequest(BaseModel):
@@ -149,7 +152,7 @@ def list_users(db_path: str) -> list[dict[str, Any]]:
         conn.row_factory = sqlite3.Row
         cursor = conn.execute(
             """
-            SELECT id, username, role, created_at, updated_at
+            SELECT id, username, role, password_hash, created_at, updated_at
             FROM users
             ORDER BY id DESC
             """
@@ -158,15 +161,16 @@ def list_users(db_path: str) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
-def create_user(db_path: str, username: str, role: str) -> dict[str, Any]:
+def create_user(db_path: str, username: str, role: str, password: str) -> dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat(timespec="seconds") + "Z"
+    password_hash = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
     with sqlite3.connect(db_path) as conn:
         cursor = conn.execute(
             """
             INSERT INTO users (username, role, password_hash, created_at, updated_at)
-            VALUES (?, ?, NULL, ?, ?)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (username.strip(), role, now, now),
+            (username.strip(), role, password_hash, now, now),
         )
         user_id = cursor.lastrowid
         conn.commit()
@@ -638,8 +642,9 @@ async def create_user_endpoint(payload: UserCreateRequest) -> dict[str, Any]:
     clean_username = payload.username.strip()
     if not clean_username:
         raise HTTPException(status_code=400, detail="Username must not be empty")
+    clean_password = payload.user_password.strip()
     try:
-        user = create_user(STATE.db_path, clean_username, clean_role)
+        user = create_user(STATE.db_path, clean_username, clean_role, clean_password)
     except sqlite3.IntegrityError as e:
         raise HTTPException(status_code=409, detail="Username already exists") from e
     return {"status": "success", "item": user}
