@@ -1,7 +1,6 @@
-import bcrypt from 'bcryptjs';
-
 // Configuration - Update these to match your Python server
 const API_ENDPOINT = "/chat"; // Change endpoint if needed
+const LOGIN_ENDPOINT = "/auth/login";
 const ADMIN_PASSWORD = "admin123"; // Default admin password - change in production
 const ADMIN_LOGIN = "bebra";
 
@@ -152,12 +151,6 @@ function loadUser() {
   return false;
 }
 
-// Save user to localStorage - DISABLED to always show login screen
-function saveUser() {
-  // Do not save - always require login
-  // localStorage.setItem('aiChatUser', JSON.stringify(currentUser));
-}
-
 // Clear all user data
 function clearAllUserData() {
   localStorage.removeItem("aiChatUser");
@@ -240,69 +233,76 @@ function updateSettingsByRole() {
 async function login() {
   const mode = loginMode.value;
   const username = usernameInput.value.trim();
+  const password =
+    mode === "admin" ? adminPassword.value.trim() : userPassword.value.trim();
+
   if (username == "") {
     window.alert("Пожалуйста, введите логин");
     return;
   }
-
-  try {
-    users = await fetch(`${serverUrl}/users`, {
-      method: "GET",
-      header: { "Content-Type": "application/json" }
-    })
-
-    if (!users.ok) {
-      throw new Error(`Ошибка загрузки списка пользователей: ${users.status}`);
-    }
-
-    const data = await users.json();
-    const usersArray = Array.isArray(data.items) ? data.items : [];
-
-    let userDebil = {};
-    let passwordHashUser = "";
-
-    for (const user of usersArray) {
-      if (user.username === username) {
-        userDebil = user.username;
-        passwordHashUser = user.password_hash;
-      }
-    }
-  } catch (error) {
-    console.log(`Произошла непредвиденная ошибка: ${error}`);
-    window.alert("Произошла ошибка. Для подробной информации откройте консоль");
+  if (!password) {
+    window.alert("Пожалуйста, введите пароль");
     return;
   }
 
-  if (mode === "admin") {
-    // Admin login
-    const password = adminPassword.value.trim();
-
-    if (!password) {
-      alert("Пожалуйста, введите пароль администратора");
-      return;
-    }
-    if (password !== ADMIN_PASSWORD) {
-      alert("Неверный пароль администратора");
-      return;
-    }
-    if ()
-
-    bcrypt.compare(password, )
-
+  if (
+    mode === "admin" &&
+    username === ADMIN_LOGIN &&
+    password === ADMIN_PASSWORD
+  ) {
     currentUser = {
-      username: username,
-      role: "admin",
+      username: user.username,
+      role: user.role,
     };
-  } else {
-    // User login - just username, no API key needed
-    currentUser = {
-      username: username,
-      role: "user",
-    };
+    showChatInterface();
   }
 
-  saveUser();
-  showChatInterface();
+  const serverUrl = getServerBaseUrl();
+  if (!serverUrl) {
+    window.alert("Сначала укажите URL сервера в настройках");
+    return;
+  }
+
+  loginButton.disabled = true;
+  try {
+    const response = await fetch(`${serverUrl}${LOGIN_ENDPOINT}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username,
+        password,
+        mode,
+      }),
+    });
+
+    if (!response.ok) {
+      let detail = `Ошибка входа: ${response.status}`;
+      try {
+        const errorData = await response.json();
+        detail = errorData.detail || detail;
+      } catch {
+        // keep fallback detail
+      }
+      throw new Error(detail);
+    }
+
+    const data = await response.json();
+    const user = data?.item;
+    if (!user?.username || !user?.role) {
+      throw new Error("Сервер вернул некорректный ответ");
+    }
+
+    currentUser = {
+      username: user.username,
+      role: user.role,
+    };
+    showChatInterface();
+  } catch (error) {
+    console.error("Login error:", error);
+    window.alert(error.message || "Не удалось выполнить вход");
+  } finally {
+    loginButton.disabled = false;
+  }
 }
 
 // Logout function
@@ -383,7 +383,7 @@ async function addUser() {
   if (!username) return;
 
   const userPassword = prompt("Введите пароль пользователя:");
-  if (!userpassword) return;
+  if (!userPassword) return;
 
   const role = confirm(
     "Сделать администратором? (OK = админ, Отмена = пользователь)",
@@ -403,7 +403,7 @@ async function addUser() {
         username: username.trim(),
         role: role ? "admin" : "user",
         user_role: currentUser.role,
-        user_password: userPassword.trim()
+        user_password: userPassword.trim(),
       }),
     });
     if (!response.ok) {
@@ -741,7 +741,7 @@ async function loadChatSessions() {
   }
 
   try {
-    const username = encodeURIComponent(currentUser.username || "Пользователь");-
+    const username = encodeURIComponent(currentUser.username || "Пользователь");
     const response = await fetch(
       `${serverUrl}/chat/sessions?username=${username}&limit=100`,
     );

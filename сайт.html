@@ -2,7 +2,8 @@
 <html lang="ru">
 <head>
     <meta charset="utf-8">
-    <link rel="stylesheet" type="text/css" href='cssшрифт.css'>
+    <title>Виртуальный Архимед</title>
+    <link rel="stylesheet" type="text/css" href="cssшрифт.css">
 </head>
 <body>
     <script src="работа.js" defer></script>
@@ -181,11 +182,11 @@
                 <div class="admin-section">
                     <h3>Настройки сервера</h3>
                     <div class="setting-group">
-                        <label class="setting-label">URL сервера</label>
+                        <label class="setting-label" for="adminServerUrl">URL сервера</label>
                         <textarea class="setting-input setting-textarea" id="adminServerUrl" placeholder="https://..."></textarea>
                     </div>
                     <div class="setting-group">
-                        <label class="setting-label">System Prompt (Глобальный)</label>
+                        <label class="setting-label" for="adminSystemPrompt">System Prompt (Глобальный)</label>
                         <textarea class="setting-input setting-textarea" id="adminSystemPrompt" placeholder="Глобальный системный промпт..."></textarea>
                     </div>
                     <button class="login-button admin-save-btn" id="saveServerSettings">Сохранить</button>

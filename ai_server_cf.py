@@ -85,6 +85,12 @@ class UserUpdateRequest(BaseModel):
     user_role: str = Field(default="user", description="Роль того, кто выполняет действие")
 
 
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=120)
+    password: str = Field(default="")
+    mode: str = Field(default="user", description="Режим входа: user/admin")
+
+
 # ---------- Global runtime state ----------
 @dataclass # автоматически создают __init__ для класса, в котором инициализирует данные. по сути генератор шаблона на лету
 class RuntimeState:
@@ -147,12 +153,15 @@ def init_users_db(db_path: str) -> None:
         conn.commit()
 
 
-def list_users(db_path: str) -> list[dict[str, Any]]:
+def list_users(db_path: str, include_password_hash: bool = False) -> list[dict[str, Any]]:
+    select_fields = "id, username, role, created_at, updated_at"
+    if include_password_hash:
+        select_fields = "id, username, role, password_hash, created_at, updated_at"
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.execute(
-            """
-            SELECT id, username, role, password_hash, created_at, updated_at
+            f"""
+            SELECT {select_fields}
             FROM users
             ORDER BY id DESC
             """
@@ -163,7 +172,7 @@ def list_users(db_path: str) -> list[dict[str, Any]]:
 
 def create_user(db_path: str, username: str, role: str, password: str) -> dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat(timespec="seconds") + "Z"
-    password_hash = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
+    password_hash = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
     with sqlite3.connect(db_path) as conn:
         cursor = conn.execute(
             """
@@ -230,6 +239,36 @@ def delete_user(db_path: str, user_id: int) -> bool:
         cursor = conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
         conn.commit()
     return cursor.rowcount > 0
+
+
+def get_user_credentials(db_path: str, username: str) -> Optional[dict[str, Any]]:
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT id, username, role, password_hash, created_at, updated_at
+            FROM users
+            WHERE username = ?
+            LIMIT 1
+            """,
+            (username.strip(),),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def verify_password(password: str, password_hash: Optional[str]) -> bool:
+    if not password_hash:
+        return False
+    normalized_hash = password_hash
+    if normalized_hash.startswith("b'") and normalized_hash.endswith("'"):
+        normalized_hash = normalized_hash[2:-1]
+    try:
+        return bcrypt.checkpw(
+            password.encode("utf-8"),
+            normalized_hash.encode("utf-8"),
+        )
+    except ValueError:
+        return False
 
 
 def save_chat_message(
@@ -628,8 +667,46 @@ async def update_prompt(payload: AdminPromptRequest) -> dict[str, str]:
 
 @app.get("/users", tags=["users"])
 async def get_users() -> dict[str, Any]:
-    users = list_users(STATE.db_path)
+    users = list_users(STATE.db_path, include_password_hash=False)
     return {"count": len(users), "items": users}
+
+
+@app.post(
+    "/auth/login",
+    tags=["users"],
+    responses={400: {"description": "Invalid data"}, 401: {"description": "Invalid credentials"}},
+)
+async def auth_login(payload: LoginRequest) -> dict[str, Any]:
+    mode = payload.mode.strip().lower()
+    if mode not in {"user", "admin"}:
+        raise HTTPException(status_code=400, detail="Mode must be 'user' or 'admin'")
+
+    username = payload.username.strip()
+    if not username:
+        raise HTTPException(status_code=400, detail="Username must not be empty")
+    if not payload.password:
+        raise HTTPException(status_code=400, detail="Password must not be empty")
+
+    user = get_user_credentials(STATE.db_path, username)
+    if not user:
+        raise HTTPException(status_code=401, detail="Неверный логин или пароль")
+
+    if mode == "admin" and user.get("role") != "admin":
+        raise HTTPException(status_code=401, detail="У пользователя нет прав администратора")
+
+    if not verify_password(payload.password, user.get("password_hash")):
+        raise HTTPException(status_code=401, detail="Неверный логин или пароль")
+
+    return {
+        "status": "success",
+        "item": {
+            "id": user["id"],
+            "username": user["username"],
+            "role": user["role"],
+            "created_at": user["created_at"],
+            "updated_at": user["updated_at"],
+        },
+    }
 
 
 @app.post("/users", tags=["users"], responses={400: {"description": "Invalid data"}, 403: {"description": "Forbidden action for non-admin account"}, 409: {"description": "Username already exists"}})
@@ -643,6 +720,8 @@ async def create_user_endpoint(payload: UserCreateRequest) -> dict[str, Any]:
     if not clean_username:
         raise HTTPException(status_code=400, detail="Username must not be empty")
     clean_password = payload.user_password.strip()
+    if not clean_password:
+        raise HTTPException(status_code=400, detail="Password must not be empty")
     try:
         user = create_user(STATE.db_path, clean_username, clean_role, clean_password)
     except sqlite3.IntegrityError as e:
