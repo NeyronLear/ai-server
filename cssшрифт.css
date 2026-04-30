@@ -1467,6 +1467,10 @@ body::before {
     background: linear-gradient(135deg, #ff6b6b 0%, #d64545 100%);
 }
 
+.retry-btn {
+    background: linear-gradient(135deg, #4caf50 0%, #2f8f3a 100%);
+}
+
 .think-block {
     margin-top: 10px;
     padding: 8px 10px;

@@ -43,6 +43,7 @@ const chatList = document.getElementById("chatList");
 const chatMessages = document.getElementById("chatMessages");
 const chatInput = document.getElementById("chatInput");
 const sendButton = document.getElementById("sendButton");
+const retryButton = document.getElementById("retryButton");
 const typingIndicator = document.getElementById("typingIndicator");
 
 // Image upload elements
@@ -99,6 +100,7 @@ let usersDatabase = [];
 let loginInProgress = false;
 let activeRequestController = null;
 let activeRequestId = null;
+let lastGenerationRequest = null;
 let heartbeatTimer = null;
 
 // Load settings from localStorage
@@ -193,6 +195,7 @@ function initializeApp() {
   clearAllUserData();
   loadSettings();
   showLoginScreen();
+  setGenerationControls(false);
 }
 
 // Show login screen
@@ -203,10 +206,12 @@ function showLoginScreen() {
   toggleLoginMode();
   // Clear current user data when showing login
   currentUser = { username: "Пользователь", role: "user" };
+  lastGenerationRequest = null;
   if (heartbeatTimer) {
     clearInterval(heartbeatTimer);
     heartbeatTimer = null;
   }
+  setGenerationControls(false);
 }
 
 // Show chat interface
@@ -961,37 +966,16 @@ function updateServerStatus(connected) {
   }
 }
 
-// Function to send message to server
-async function sendMessage() {
-  const message = chatInput.value.trim();
-  const imagesToSend = uploadedImages.map((img) => img.base64);
+function setGenerationControls(isGenerating) {
+  chatInput.disabled = isGenerating;
+  sendButton.disabled = isGenerating;
+  retryButton.disabled = isGenerating || !lastGenerationRequest;
+  imageToggleButton.disabled = isGenerating;
+  stopButton.style.display = isGenerating ? "inline-flex" : "none";
+}
 
-  // Allow sending even if message is empty if there are images
-  if (!message && imagesToSend.length === 0) {
-    return;
-  }
-
-  // Add user message to chat with images
-  addMessage(
-    message || "(image only)",
-    true,
-    imagesToSend.length > 0 ? imagesToSend : null,
-  );
-
-  // Clear input and images
-  chatInput.value = "";
-  chatInput.style.height = "auto";
-  uploadedImages = [];
-  imagePreviewContainer.innerHTML = "";
-  imageUploadContainer.classList.remove("active");
-
-  // Disable input and send button
-  chatInput.disabled = true;
-  sendButton.disabled = true;
-  stopButton.style.display = "inline-flex";
-  imageToggleButton.disabled = true;
-
-  // Show typing indicator
+async function runGeneration(requestBody) {
+  setGenerationControls(true);
   showTypingIndicator(true);
   const assistantShell = createAssistantMessageShell();
   let streamedResponse = "";
@@ -999,26 +983,7 @@ async function sendMessage() {
 
   try {
     activeRequestController = new AbortController();
-    activeRequestId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-    // Prepare request body
-    const requestBody = {
-      message: message || "",
-      temperature: parseFloat(temperatureSlider.value),
-      top_p: parseFloat(topPSlider.value),
-      max_new_tokens: parseInt(maxTokensSlider.value, 10),
-      system_prompt: systemPrompt.value.trim() || null,
-      do_sample: true,
-      username: currentUser.username || "Пользователь",
-      session_id: currentSessionId,
-      request_id: activeRequestId,
-    };
-
-    // Add images if any
-    if (imagesToSend.length > 0) {
-      requestBody.images = imagesToSend;
-    }
-
-    // Send request to server with current settings
+    activeRequestId = requestBody.request_id;
     const serverUrl = getServerBaseUrl();
     if (!serverUrl) {
       throw new Error("URL сервера не настроен");
@@ -1026,20 +991,12 @@ async function sendMessage() {
 
     const response = await fetch(`${serverUrl}${STREAM_ENDPOINT}`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(requestBody),
       signal: activeRequestController.signal,
     });
-
-    if (!response.ok) {
-      throw new Error(`Server error: ${response.status}`);
-    }
-
-    if (!response.body) {
-      throw new Error("Пустой поток ответа от сервера");
-    }
+    if (!response.ok) throw new Error(`Server error: ${response.status}`);
+    if (!response.body) throw new Error("Пустой поток ответа от сервера");
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder("utf-8");
@@ -1080,15 +1037,10 @@ async function sendMessage() {
       donePayload?.response || streamedResponse || "No response received";
     renderAssistantContent(assistantShell.contentDiv, aiResponse);
     await loadChatSessions();
-
     updateServerStatus(true);
   } catch (error) {
     console.error("Error:", error);
-
-    // Hide typing indicator
     showTypingIndicator(false);
-
-    // Show error message
     const isAbort = error && error.name === "AbortError";
     const abortText = "Генерация остановлена пользователем.";
     assistantShell.contentDiv.textContent = "";
@@ -1100,13 +1052,58 @@ async function sendMessage() {
   } finally {
     activeRequestController = null;
     activeRequestId = null;
-    // Re-enable input and send button
-    chatInput.disabled = false;
-    sendButton.disabled = false;
-    stopButton.style.display = "none";
-    imageToggleButton.disabled = false;
+    setGenerationControls(false);
     chatInput.focus();
   }
+}
+
+// Function to send message to server
+async function sendMessage() {
+  const message = chatInput.value.trim();
+  const imagesToSend = uploadedImages.map((img) => img.base64);
+  if (!message && imagesToSend.length === 0) return;
+
+  addMessage(
+    message || "(image only)",
+    true,
+    imagesToSend.length > 0 ? imagesToSend : null,
+  );
+
+  const requestBody = {
+    message: message || "",
+    temperature: parseFloat(temperatureSlider.value),
+    top_p: parseFloat(topPSlider.value),
+    max_new_tokens: parseInt(maxTokensSlider.value, 10),
+    system_prompt: systemPrompt.value.trim() || null,
+    do_sample: true,
+    username: currentUser.username || "Пользователь",
+    session_id: currentSessionId,
+    request_id: `req_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+  };
+  if (imagesToSend.length > 0) {
+    requestBody.images = imagesToSend;
+  }
+  lastGenerationRequest = { ...requestBody };
+
+  chatInput.value = "";
+  chatInput.style.height = "auto";
+  uploadedImages = [];
+  imagePreviewContainer.innerHTML = "";
+  imageUploadContainer.classList.remove("active");
+
+  await runGeneration(requestBody);
+}
+
+async function retryLastGeneration() {
+  if (!lastGenerationRequest) {
+    addMessage("Нет запроса для повтора.", false);
+    return;
+  }
+  const retriedRequest = {
+    ...lastGenerationRequest,
+    request_id: `req_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+  };
+  await runGeneration(retriedRequest);
 }
 
 function stopGeneration() {
@@ -1216,6 +1213,7 @@ SERVER_URL.addEventListener("input", saveSettings);
 hideThinkToggle.addEventListener("change", saveSettings);
 serverButton.addEventListener("click", testConnection);
 stopButton.addEventListener("click", stopGeneration);
+retryButton.addEventListener("click", retryLastGeneration);
 
 // Reset settings
 resetSettings.addEventListener("click", () => {
