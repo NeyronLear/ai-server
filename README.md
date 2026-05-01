@@ -1,32 +1,29 @@
-# AI Server Setup Guide
+Этот сервер позволяет локально запустить модель Qwen 3 VL и использовать через API, с опциональной поддержкой туннеля Cloudflare и базой данных пользователей и историй их чатов.
 
-This server hosts your Qwen3-VL AI model locally and makes it accessible via API endpoints, with optional Cloudflare tunnel support for external access.
-
-## Prerequisites
+## Зависимости
 
 1. **Python 3.8+**
-2. **CUDA-capable GPU** with sufficient VRAM (for GPU inference)
-3. **Unsloth** and related dependencies installed
-4. **Cloudflared** (optional, for external access)
+2. **CUDA-capable GPU** с достаточным количеством VRAM
+3. **Unsloth** и другие необходимые библиотеки (смотреть requirements_server.txt)
+4. **Cloudflared** (необязательно)
 
-## Installation
+## Установка
 
-### 1. Install Python Dependencies
+### 1. Установка зависимостей Python
 
 ```bash
 pip install -r requirements_server.txt
 ```
 
-### 2. Install Cloudflared (Optional - for external access)
+### 2. Установка Cloudflared
 
 **Windows:**
-- Download from: https://github.com/cloudflare/cloudflared/releases
-- Or use: `winget install --id Cloudflare.cloudflared`
-- Or use: `choco install cloudflared`
+- Установить из: https://github.com/cloudflare/cloudflared/releases
+- Или: `winget install --id Cloudflare.cloudflared`
+- Или: `choco install cloudflared`
 
 **Linux/Mac:**
 ```bash
-# Linux
 wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
 chmod +x cloudflared-linux-amd64
 sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
@@ -35,74 +32,77 @@ sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
 brew install cloudflared
 ```
 
-## Configuration
+## Настройка
 
-### Model Path
+### Путь модели
 
-Update the `MODEL_PATH` variable in `ai_server.py` to point to your trained model:
+Измените переменную `MODEL_PATH` в `ai_server.py`:
 
 ```python
 MODEL_PATH = "lora_model"  # Path to your saved LoRA model
 ```
 
-Or use command line argument:
+Или используйте аргумент командной строки:
 ```bash
-python ai_server.py --model-path "path/to/your/model"
+python ai_server_cf.py --model-path "path/to/your/model"
 ```
 
-## Usage
+## Использование
 
-### Basic Usage (Local Only)
-
-```bash
-python ai_server.py
-```
-
-Server will start on `http://localhost:8000`
-
-### With Cloudflare Tunnel (External Access)
+### Локально
 
 ```bash
-python ai_server.py
+python ai_server_cf.py
 ```
 
-The server will automatically start a Cloudflare tunnel if `cloudflared` is installed. You'll see a public URL like:
+Сервер будет запущен на `http://localhost:8000`
+
+### С туннелем Cloudflare
+
+```bash
+python ai_server_сf.py
+```
+
+Сервер автоматически запустится если `cloudflared` установлен. Вы увидите ссылку по типу:
 ```
 https://xxxxx.trycloudflare.com
 ```
 
-### Command Line Options
+### Аргументы командной строки
 
 ```bash
-python ai_server.py --help
+python ai_server_cf.py --help
 
 Options:
-  --port PORT          Server port (default: 8000)
-  --host HOST          Server host (default: 0.0.0.0)
-  --model-path PATH    Path to model directory
-  --no-tunnel          Don't start Cloudflare tunnel
-  --reload             Enable auto-reload (development mode)
+  --port PORT          Номер порта для запуска сервера (8000 по умолчанию)
+  --host HOST          Адрес хоста для запуска сервера (0.0.0.0 по умолчанию)
+  --model-path PATH    Путь к модели ии (./lora_model по умолчанию)
+  --base-model NAME    Название запасной модели, если путь основной отсутствует (Qwen/Qwen3-VL-8B-Thinking по умолчанию)
+  --load-in-4bit BOOL  Загрузка в 4-х битной квантизации для оптимизации (False по умолчанию)
+  --no-tunnel          Без запуска туннеля cloudflare
+  --reload             Включает перезагрузку uvicorn
+  --db-path NAME       Изменить нзвание базы данных историй чатов
 ```
 
-### Examples
+### Примеры
 
 ```bash
-# Custom port
+# Другой порт
 python ai_server.py --port 9000
 
-# No Cloudflare tunnel
+# Без туннеля
 python ai_server.py --no-tunnel
 
-# Development mode with auto-reload
+# Режим разработки с автоперезагрузкой
 python ai_server.py --reload
 
-# Custom model path
+# Свой путь к модели
 python ai_server.py --model-path "models/my_custom_model"
 ```
 
-## API Endpoints
+## Пути API
 
-### 1. Health Check
+### 1. Проверка сервера
 ```
 GET /health
 ```
@@ -114,11 +114,12 @@ Response:
   "model_loaded": true/false,
   "device": "cuda"/"cpu",
   "gpu_available": true/false,
-  "gpu_name": "{your_gpu_here}"
+  "gpu_name": "{your_gpu_here}",
+  "tunnel_url": "https://xxxxx.trycloudflare.com"
 }
 ```
 
-### 2. Chat Endpoint
+### 2. Чат
 ```
 POST /chat
 Content-Type: application/json
@@ -131,7 +132,12 @@ Request:
   "max_new_tokens": 512,
   "temperature": 0.7,
   "top_p": 0.9,
-  "do_sample": true
+  "do_sample": true,
+  "system_prompt": "<системный промпт>",
+  "images": [],
+  "username": "user_username",
+  "session_id": "<ИД сессии>",
+  "request_id": "<ИД запроса>"
 }
 ```
 
@@ -143,60 +149,270 @@ Response:
 }
 ```
 
-### 3. Root Endpoint
+### 3. Корневой путь
 ```
 GET /
 ```
 
-Returns API information and status.
+Возвращает статус и информацию о сервере
 
-## Using with Chat Interface
+### 4. Остановка генерации
+```
+POST /chat/stop
+Content-Type: application/json
+```
 
-1. Start the server:
+Request:
+```json
+{
+  "request_id": "<ИД запроса>"
+}
+```
+
+Останавливает генерацию запроса по `request_id`
+
+### 5. Стриминг ответа
+```
+POST /chat/stream
+Content-Type: application/json
+```
+
+Request:
+```json
+{
+  "message": "Hello, how are you?",
+  "max_new_tokens": 512,
+  "temperature": 0.7,
+  "top_p": 0.9,
+  "do_sample": true,
+  "system_prompt": "<системный промпт>",
+  "images": [],
+  "username": "user_username",
+  "session_id": "<ИД сессии>",
+  "request_id": "<ИД запроса>"
+}
+```
+
+Response: возвращает StreamingResponse
+
+### 6. История одного чата пользователя
+```
+GET /chat/history/{session_id}
+```
+
+Arguments:
+```json
+{
+  "session_id": "<ИД сессии>",
+  "limit": 100,
+  "username": "user_username"
+}
+
+Response:
+```json
+{
+  "session_id": "<ИД сессии>",
+  "count": 100,
+  "items": [{}]
+}
+```
+
+### 7. Все истории чатов одного пользователя
+```
+GET /chat/sessions
+```
+
+Arguments:
+```json
+{
+  "username": "user_username",
+  "limit": 50
+}
+```
+
+Response:
+```json
+{
+  "count": 50,
+  "items": [{}]
+}
+```
+
+### 8. Установка глобального промпта (admin-only)
+```
+POST /admin/update-prompt
+Content-Type: application/json
+```
+
+Request:
+```json
+{
+  "new_prompt": "<промпт>",
+  "user_role": "<роль пользователя-отправителя>"
+}
+```
+
+### 9. Список пользователей
+```
+GET /users
+```
+
+Response:
+```json
+{
+  "count": 100,
+  "items": [{}]
+}
+```
+
+### 10. Вход пользователей на сайт
+```
+POST /auth/login
+Content-Type: application/json
+```
+
+Request:
+```json
+{
+  "username" : "user_username",
+  "password": "user_password",
+  "mode": "user"/"admin"
+}
+```
+
+Response:
+```json
+{
+  "status": "success",
+  "item": {
+    "id": "id",
+    "username": "user_username",
+    "role": "user"/"admin",
+    "created_at": "date_created_at",
+    "updated_at": "date_updated_at",
+  }
+}
+```
+
+### 11. Проверка активных пользователей
+```
+POST /auth/heartbeat
+Content-Type: application/json
+```
+
+Request:
+```json
+{
+  "username": "user_username"
+}
+```
+
+Response:
+```json
+{
+  "status": "success"
+}
+```
+
+### 12. Статистика активных пользователей (admin-only)
+```
+GET /admin/stats
+```
+
+Arguments:
+```json
+{
+  "user_role": "admin"/"user"
+}
+
+Response:
+```json
+{
+  "active_users": 100
+}
+```
+
+### 13. Создание, изменение, удаление пользователей
+
+#### 1. Создание
+```
+POST /users
+Content-Type: application/json
+```
+
+Request:
+```json
+{
+  "username": "user-username",
+  "role": "admin"/"user",
+  "user_role": "admin"/"user" (роль создающего),
+  "user_password": "<пароль созданного пользователя>"
+}
+```
+
+#### 2. Изменение
+```
+PUT /users/{user_id}
+```
+
+Request:
+```json
+{
+  "username": "user_username",
+  "role": "admin"/"user",
+  "user_role": "admin"/"user" (роль изменяющего)
+}
+```
+
+### 3. Удаление
+```
+DELETE /users/{user_id}
+```
+
+Arguments:
+```json
+{
+  "user_id": "<ИД удаляемого пользователя>",
+  "user_role": "admin"/"user" (роль удаляющего)
+}
+```
+
+## Использование вместе с сайтом
+
+1. Запустить сервер:
    ```bash
-   python ai_server.py
+   python ai_server_cf.py
    ```
 
-2. Open `chat_interface.html` in your browser
+2. Открыть `сайт.html` в браузере
 
-3. The HTML file is configured to connect to `http://localhost:8000` by default
+3. Войдите в базовый аккаунт админа (логин и пароль находятся в работа.js)
 
-4. If using Cloudflare tunnel, update the `SERVER_URL` in `chat_interface.html`:
-   ```javascript
-   const SERVER_URL = 'https://xxxxx.trycloudflare.com';
-   ```
+4. В настройках вставьте URL туннеля Cloudflare
 
-## Troubleshooting
+## Решение проблем
 
-### Model Not Loading
-- Check that the model path is correct
-- Ensure you have sufficient GPU memory
-- Verify Unsloth is properly installed
-- Check server logs for error messages
+### Модель не загружается
+- Проверьте путь к модели
+- Убедитесь, что у вас достаточно VRAM
+- Убедитесь, что все библиотеки установлены
+- Проверьте логи сервера
 
-### Cloudflare Tunnel Not Working
-- Ensure `cloudflared` is installed and in PATH
-- Check firewall settings
-- Try running `cloudflared tunnel --url http://localhost:8000` manually
+### Не работает туннель Cloudflare
+- Убедитесь, что `cloudflared` установлен 
+- Проверьте настройки брандмауэра
+- Попробуйте самостоятельно запустить туннель с помощтю `cloudflared tunnel --url http://localhost:8000` 
 
-### Out of Memory Errors
-- Reduce `max_new_tokens` in requests
-- Use a smaller model or quantized version
-- Close other GPU-intensive applications
+### Ошибки OOM
+- Уменьшите `max_new_tokens` 
+- Используйте меньшую модель
+- закройте приложения, забирающие VRAM
 
-### CORS Errors
-- The server includes CORS middleware allowing all origins
-- If issues persist, check browser console for specific errors
+### Ошибки CORS
+- Проверьте консоль браузера на специфические ошибки
 
-## Security Notes
+## Пометка о безопасности
  
-- The server allows CORS from all origins (`allow_origins=["*"]`). For production, restrict this to your specific domain
-- Cloudflare tunnel URLs are temporary and change on restart
-- Consider adding authentication for production use
-
-## Next Steps
-
-- Add authentication/API keys
-- Add conversation history/context management and prompt
-- Implement rate limiting
+- Сервер разрешает все источники с помощью CORS (`allow_origins=["*"]`)
+- URL туннеля меняется с каждым перезапуском
 

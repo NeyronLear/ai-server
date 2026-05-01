@@ -892,7 +892,7 @@ async def chat_history(
         session_id,
         safe_limit,
         username=username,
-    ) # берем из бд истортю сообщений нужной сессии
+    ) # берем из бд историю сообщений нужной сессии
     return {"session_id": session_id, "count": len(history), "items": history}
 
 
