@@ -8,9 +8,11 @@ pydantic>=2.0.0
 
 # AI/ML libraries (if not already installed)
 # Note: Unsloth installation may vary - check their documentation
-# torch>=2.0.0  # Usually installed with Unsloth
-# transformers>=4.57.2  # Usually installed with Unsloth
-# unsloth  # Install separately: pip install unsloth
+torch>=2.0.0  # Usually installed with Unsloth
+transformers>=4.57.2  # Usually installed with Unsloth
+unsloth  # Install separately: pip install unsloth
+
+bcrypt
 
 # CORS support (included in fastapi but explicit)
 python-multipart>=0.0.6
