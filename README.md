@@ -207,6 +207,7 @@ Arguments:
   "limit": 100,
   "username": "user_username"
 }
+```
 
 Response:
 ```json
@@ -324,6 +325,7 @@ Arguments:
 {
   "user_role": "admin/user"
 }
+```
 
 Response:
 ```json
