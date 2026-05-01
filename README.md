@@ -111,7 +111,7 @@ Response:
 ```json
 {
   "status": "healthy",
-  "model_loaded": true/false,
+  "model_loaded": true or false,
   "device": "cuda"/"cpu",
   "gpu_available": true/false,
   "gpu_name": "{your_gpu_here}",
