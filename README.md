@@ -111,9 +111,9 @@ Response:
 ```json
 {
   "status": "healthy",
-  "model_loaded": true or false,
-  "device": "cuda"/"cpu",
-  "gpu_available": true/false,
+  "model_loaded": true
+  "device": "cuda/cpu",
+  "gpu_available": true,
   "gpu_name": "{your_gpu_here}",
   "tunnel_url": "https://xxxxx.trycloudflare.com"
 }
@@ -276,7 +276,7 @@ Request:
 {
   "username" : "user_username",
   "password": "user_password",
-  "mode": "user"/"admin"
+  "mode": "user/admin"
 }
 ```
 
@@ -287,7 +287,7 @@ Response:
   "item": {
     "id": "id",
     "username": "user_username",
-    "role": "user"/"admin",
+    "role": "user/admin",
     "created_at": "date_created_at",
     "updated_at": "date_updated_at",
   }
@@ -322,7 +322,7 @@ GET /admin/stats
 Arguments:
 ```json
 {
-  "user_role": "admin"/"user"
+  "user_role": "admin/user"
 }
 
 Response:
@@ -344,8 +344,8 @@ Request:
 ```json
 {
   "username": "user-username",
-  "role": "admin"/"user",
-  "user_role": "admin"/"user" (роль создающего),
+  "role": "admin/user",
+  "user_role": "admin/user (роль создающего)",
   "user_password": "<пароль созданного пользователя>"
 }
 ```
@@ -359,8 +359,8 @@ Request:
 ```json
 {
   "username": "user_username",
-  "role": "admin"/"user",
-  "user_role": "admin"/"user" (роль изменяющего)
+  "role": "admin/user",
+  "user_role": "admin/user (роль изменяющего)"
 }
 ```
 
@@ -373,7 +373,7 @@ Arguments:
 ```json
 {
   "user_id": "<ИД удаляемого пользователя>",
-  "user_role": "admin"/"user" (роль удаляющего)
+  "user_role": "admin/user (роль удаляющего)"
 }
 ```
 
