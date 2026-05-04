@@ -1,7 +1,5 @@
 // Configuration - Update these to match your Python server
 const API_ENDPOINT = "/chat"; // Change endpoint if needed
-const STREAM_ENDPOINT = "/chat/stream";
-const STOP_ENDPOINT = "/chat/stop";
 const LOGIN_ENDPOINT = "/auth/login";
 const ADMIN_PASSWORD = "admin123"; // Default admin password - change in production
 const ADMIN_LOGIN = "bebra";
@@ -68,7 +66,6 @@ const maxTokensSlider = document.getElementById("maxTokensSlider");
 const maxTokensValue = document.getElementById("maxTokensValue");
 const hideThinkToggle = document.getElementById("hideThinkToggle");
 const resetSettings = document.getElementById("resetSettings");
-const stopButton = document.getElementById("stopButton");
 
 // Image state
 let uploadedImages = []; // Array of {base64, preview}
@@ -102,6 +99,10 @@ let activeRequestController = null;
 let activeRequestId = null;
 let lastGenerationRequest = null;
 let heartbeatTimer = null;
+let heartbeatFailures = 0;
+const HEARTBEAT_INTERVAL_MS = 30000;
+const HEARTBEAT_TIMEOUT_MS = 8000;
+const MAX_HEARTBEAT_FAILURES_BEFORE_DISCONNECT = 3;
 
 // Load settings from localStorage
 function loadSettings() {
@@ -257,6 +258,20 @@ function updateSettingsByRole() {
   });
 }
 
+function setLoginLoading(isLoading) {
+  loginInProgress = isLoading;
+  loginButton.disabled = isLoading;
+  loginMode.disabled = isLoading;
+  usernameInput.disabled = isLoading;
+  adminPassword.disabled = isLoading;
+  userPassword.disabled = isLoading;
+  loginButton.classList.toggle("loading", isLoading);
+  const label = loginButton.querySelector(".login-button-text");
+  if (label) {
+    label.textContent = isLoading ? "Выполняется вход..." : "Войти";
+  }
+}
+
 // Login function
 async function login() {
   if (loginInProgress) return;
@@ -293,18 +308,21 @@ async function login() {
     return;
   }
 
-  loginInProgress = true;
-  loginButton.disabled = true;
+  setLoginLoading(true);
   try {
-    const response = await fetch(`${serverUrl}${LOGIN_ENDPOINT}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        username,
-        password,
-        mode,
+    const response = await withTimeout(
+      fetch(`${serverUrl}${LOGIN_ENDPOINT}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username,
+          password,
+          mode,
+        }),
       }),
-    });
+      12000,
+      "Сервер слишком долго отвечает при входе",
+    );
 
     if (!response.ok) {
       let detail = `Ошибка входа: ${response.status}`;
@@ -332,8 +350,7 @@ async function login() {
     console.error("Login error:", error);
     window.alert(error.message || "Не удалось выполнить вход");
   } finally {
-    loginInProgress = false;
-    loginButton.disabled = false;
+    setLoginLoading(false);
   }
 }
 
@@ -560,6 +577,8 @@ async function saveAdminServerSettings() {
     SERVER_URL.value = adminServerUrl.value.trim();
     systemPrompt.value = adminSystemPrompt.value.trim();
     saveSettings();
+    startHeartbeat();
+    testConnection();
 
     alert("Настройки сервера сохранены!");
   } catch (error) {
@@ -815,6 +834,35 @@ function getServerBaseUrl() {
   return (currentSettings.serverUrl || "").trim().replace(/\/+$/, "");
 }
 
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withTimeout(promise, timeoutMs, timeoutMessage) {
+  let timeoutId;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function isNetworkConnectivityError(error) {
+  const msg = String(error?.message || "").toLowerCase();
+  const name = String(error?.name || "").toLowerCase();
+  return (
+    name === "typeerror" ||
+    msg.includes("failed to fetch") ||
+    msg.includes("network error") ||
+    msg.includes("networkerror") ||
+    msg.includes("connection reset") ||
+    msg.includes("err_connection_reset")
+  );
+}
+
 function escapeHtml(text) {
   const div = document.createElement("div");
   div.textContent = text || "";
@@ -966,95 +1014,86 @@ function updateServerStatus(connected) {
   }
 }
 
+function updateServerStatusWaitingUrl() {
+  statusDot.className = "status-dot disconnected";
+  statusText.textContent = "Ожидание URL сервера";
+}
+
 function setGenerationControls(isGenerating) {
   chatInput.disabled = isGenerating;
   sendButton.disabled = isGenerating;
   retryButton.disabled = isGenerating || !lastGenerationRequest;
   imageToggleButton.disabled = isGenerating;
-  stopButton.style.display = isGenerating ? "inline-flex" : "none";
 }
 
 async function runGeneration(requestBody) {
   setGenerationControls(true);
   showTypingIndicator(true);
   const assistantShell = createAssistantMessageShell();
-  let streamedResponse = "";
-  let donePayload = null;
 
   try {
-    activeRequestController = new AbortController();
-    activeRequestId = requestBody.request_id;
     const serverUrl = getServerBaseUrl();
     if (!serverUrl) {
-      throw new Error("URL сервера не настроен");
+      throw new Error("Укажите актуальный URL cloudflared в настройках");
     }
 
-    const response = await fetch(`${serverUrl}${STREAM_ENDPOINT}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(requestBody),
-      signal: activeRequestController.signal,
-    });
-    if (!response.ok) throw new Error(`Server error: ${response.status}`);
-    if (!response.body) throw new Error("Пустой поток ответа от сервера");
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder("utf-8");
-    let streamBuffer = "";
-
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      streamBuffer += decoder.decode(value, { stream: true });
-      const events = streamBuffer.split("\n\n");
-      streamBuffer = events.pop() || "";
-
-      for (const rawEvent of events) {
-        const lines = rawEvent
-          .split("\n")
-          .map((line) => line.trim())
-          .filter((line) => line.startsWith("data:"));
-        if (!lines.length) continue;
-        const payloadText = lines.map((line) => line.slice(5).trim()).join("");
-        if (!payloadText) continue;
-        const payload = JSON.parse(payloadText);
-
-        if (payload.type === "token") {
-          showTypingIndicator(false);
-          streamedResponse += payload.token || "";
-          assistantShell.contentDiv.textContent = streamedResponse;
-          chatMessages.scrollTop = chatMessages.scrollHeight;
-        } else if (payload.type === "done") {
-          donePayload = payload;
-        } else if (payload.type === "error") {
-          throw new Error(payload.message || "Ошибка генерации");
+    let finalResponse = "";
+    let lastError = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        finalResponse = await runChatGeneration(requestBody, serverUrl);
+        break;
+      } catch (error) {
+        lastError = error;
+        if (!isNetworkConnectivityError(error) || attempt === 1) {
+          throw error;
         }
+        await wait(1000);
       }
     }
 
     showTypingIndicator(false);
-    const aiResponse =
-      donePayload?.response || streamedResponse || "No response received";
-    renderAssistantContent(assistantShell.contentDiv, aiResponse);
+    if (!finalResponse && lastError) {
+      throw lastError;
+    }
+    renderAssistantContent(
+      assistantShell.contentDiv,
+      finalResponse || "No response received",
+    );
     await loadChatSessions();
     updateServerStatus(true);
+    heartbeatFailures = 0;
   } catch (error) {
     console.error("Error:", error);
     showTypingIndicator(false);
-    const isAbort = error && error.name === "AbortError";
-    const abortText = "Генерация остановлена пользователем.";
     assistantShell.contentDiv.textContent = "";
     renderAssistantContent(
       assistantShell.contentDiv,
-      isAbort ? streamedResponse || abortText : `Ошибка: ${error.message}`,
+      `Ошибка: ${error.message || "Не удалось получить ответ от сервера"}`,
     );
-    updateServerStatus(false);
   } finally {
     activeRequestController = null;
     activeRequestId = null;
     setGenerationControls(false);
     chatInput.focus();
   }
+}
+
+async function runChatGeneration(requestBody, serverUrl) {
+  const response = await withTimeout(
+    fetch(`${serverUrl}${API_ENDPOINT}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(requestBody),
+    }),
+    180000,
+    "Превышено время ожидания ответа от /chat",
+  );
+  if (!response.ok) {
+    throw new Error(`Server error: ${response.status}`);
+  }
+  const payload = await response.json();
+  return payload?.response || "";
 }
 
 // Function to send message to server
@@ -1106,31 +1145,26 @@ async function retryLastGeneration() {
   await runGeneration(retriedRequest);
 }
 
-function stopGeneration() {
-  const serverUrl = getServerBaseUrl();
-  if (serverUrl && activeRequestId) {
-    fetch(`${serverUrl}${STOP_ENDPOINT}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ request_id: activeRequestId }),
-    }).catch((error) => console.debug("Stop request failed:", error));
-  }
-  if (activeRequestController) {
-    activeRequestController.abort();
-  }
-}
-
 async function sendHeartbeat() {
   const serverUrl = getServerBaseUrl();
   if (!serverUrl || !currentUser?.username) return;
   try {
-    await fetch(`${serverUrl}/auth/heartbeat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: currentUser.username }),
-    });
+    const response = await withTimeout(
+      fetch(`${serverUrl}/auth/heartbeat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: currentUser.username }),
+      }),
+      HEARTBEAT_TIMEOUT_MS,
+      "Heartbeat timeout",
+    );
+    if (!response.ok) {
+      throw new Error(`Heartbeat status ${response.status}`);
+    }
+    heartbeatFailures = 0;
   } catch (error) {
     console.debug("Heartbeat failed:", error);
+    heartbeatFailures += 1;
   }
 }
 
@@ -1138,20 +1172,30 @@ function startHeartbeat() {
   if (heartbeatTimer) {
     clearInterval(heartbeatTimer);
   }
+  const serverUrl = getServerBaseUrl();
+  if (!serverUrl) {
+    updateServerStatusWaitingUrl();
+    return;
+  }
+  heartbeatFailures = 0;
   sendHeartbeat();
-  heartbeatTimer = setInterval(sendHeartbeat, 30000);
+  heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
 }
 
 // Test server connection on page load
 async function testConnection() {
   const serverUrl = getServerBaseUrl();
   if (!serverUrl) {
-    updateServerStatus(false);
+    updateServerStatusWaitingUrl();
     return;
   }
 
   try {
-    const response = await fetch(serverUrl);
+    const response = await withTimeout(
+      fetch(serverUrl),
+      7000,
+      "Превышено время ожидания проверки сервера",
+    );
     if (response.ok) {
       updateServerStatus(true);
     } else {
@@ -1159,7 +1203,7 @@ async function testConnection() {
     }
   } catch (error) {
     console.log(error);
-    updateServerStatus(false);
+    statusText.textContent = "Сеть нестабильна";
   }
 }
 
@@ -1210,9 +1254,20 @@ maxTokensSlider.addEventListener("input", () => {
 // Save settings when system prompt and URL changes
 systemPrompt.addEventListener("input", saveSettings);
 SERVER_URL.addEventListener("input", saveSettings);
+SERVER_URL.addEventListener("input", () => {
+  const hasServerUrl = Boolean(getServerBaseUrl());
+  if (!hasServerUrl) {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+    updateServerStatusWaitingUrl();
+    return;
+  }
+  startHeartbeat();
+});
 hideThinkToggle.addEventListener("change", saveSettings);
 serverButton.addEventListener("click", testConnection);
-stopButton.addEventListener("click", stopGeneration);
 retryButton.addEventListener("click", retryLastGeneration);
 
 // Reset settings

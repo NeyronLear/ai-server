@@ -455,6 +455,10 @@ body::before {
     cursor: pointer;
     transition: all 0.3s;
     margin-top: 10px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
 }
 
 .login-button:hover {
@@ -464,6 +468,35 @@ body::before {
 
 .login-button:active {
     transform: translateY(0);
+}
+
+.login-button:disabled {
+    opacity: 0.85;
+    cursor: not-allowed;
+}
+
+.login-spinner {
+    width: 16px;
+    height: 16px;
+    border: 2px solid rgba(255, 255, 255, 0.35);
+    border-top-color: #ffffff;
+    border-radius: 50%;
+    animation: loginSpin 0.8s linear infinite;
+    display: none;
+}
+
+.login-button.loading .login-spinner {
+    display: inline-block;
+}
+
+.login-button.loading .login-button-text {
+    opacity: 0.95;
+}
+
+@keyframes loginSpin {
+    to {
+        transform: rotate(360deg);
+    }
 }
 
 .login-footer {
@@ -1461,10 +1494,6 @@ body::before {
 .send-btn:disabled {
     opacity: 0.6;
     cursor: not-allowed;
-}
-
-.stop-btn {
-    background: linear-gradient(135deg, #ff6b6b 0%, #d64545 100%);
 }
 
 .retry-btn {

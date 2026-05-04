@@ -18,6 +18,7 @@
 
 import argparse
 import asyncio
+import concurrent.futures
 import json
 import os
 import queue
@@ -111,7 +112,6 @@ class RuntimeState:
     tokenizer: Optional[object] = None
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     tunnel_url: Optional[str] = None
-    tunnel_process: Optional[subprocess.Popen] = None # Popen создает дочернюю программу в новом процессе
     db_path: str = "chat_history.db"
 
 
@@ -119,8 +119,12 @@ STATE = RuntimeState()
 admin_prompt = ""
 ACTIVE_USERS: dict[str, float] = {}
 ACTIVE_USERS_TTL_SECONDS = 120
-ACTIVE_GENERATIONS: dict[str, threading.Event] = {}
-ACTIVE_GENERATIONS_LOCK = threading.Lock()
+
+# Один воркер: инференс не блокирует event loop, параллельно на GPU всё равно обычно один запрос.
+INFERENCE_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="ai_infer",
+)
 
 
 # ---------- FastAPI app ----------
@@ -128,7 +132,7 @@ app = FastAPI(title="AI Server", version="2.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # lock down in production
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -587,82 +591,70 @@ def generate_text(
         )
 
     response = tokenizer.decode(outputs[0][inputs["input_ids"].shape[1] :], skip_special_tokens=True).strip()
+    response = "<think>\n" + response
     return response or "(нет ответа)"
 
 
-# ---------- Cloudflare tunnel ----------
-def _find_cloudflared_binary() -> Optional[str]:
-    candidates = [
-        os.getenv("CLOUDFLARED_BIN", ""),
-        shutil.which("cloudflared") or "",
-        shutil.which("cloudflared.exe") or "",
-        os.path.join(os.getcwd(), "cloudflared"),
-        os.path.join(os.getcwd(), "cloudflared.exe"),
-    ]
-    for c in candidates:
-        if c and os.path.exists(c):
-            return c
-    return None
+def _chat_inference(request: ChatRequest) -> str:
+    """Синхронная часть /chat: контекст, генерация, запись в БД. Выполняется в пуле потоков."""
+    if STATE.model is None or STATE.tokenizer is None:
+        raise RuntimeError("Model is not loaded.")
+
+    effective_system_prompt = _build_effective_prompt(request.system_prompt)
+    context_messages = _compose_context_messages(
+        db_path=STATE.db_path,
+        username=request.username or "Пользователь",
+        session_id=request.session_id or "default",
+        limit=12,
+    )
+    result = generate_text(
+        message=request.message,
+        max_new_tokens=request.max_new_tokens,
+        temperature=request.temperature,
+        top_p=request.top_p,
+        do_sample=request.do_sample,
+        system_prompt=effective_system_prompt,
+        images=request.images,
+        context_messages=context_messages,
+    )
+    save_chat_message(
+        db_path=STATE.db_path,
+        username=request.username or "Пользователь",
+        session_id=request.session_id or "default",
+        user_message=request.message,
+        ai_response=result,
+        generation_settings={
+            "max_new_tokens": request.max_new_tokens,
+            "temperature": request.temperature,
+            "top_p": request.top_p,
+            "do_sample": request.do_sample,
+            "system_prompt": request.system_prompt,
+            "images_count": len(request.images or []),
+        },
+    )
+    return result
 
 
-def _read_tunnel_output(proc: subprocess.Popen, out_q: queue.Queue[str]) -> None:
-    if proc.stdout is None:
-        return
-    for line in iter(proc.stdout.readline, ""):
-        if not line:
-            break
-        out_q.put(line.rstrip()) # добавляем строки из stdout в очередь
+# ---------- CloudPub tunnel ----------
+def start_cloudpub_tunnel(port: int) -> Optional[str]:
+    from cloudpub_python_sdk import Connection, Protocol, Auth
+    from google.colab import userdata
 
+    global conn, endpoint
 
-def start_cloudflare_tunnel(port: int) -> Optional[subprocess.Popen]:
-    bin_path = _find_cloudflared_binary()
-    if not bin_path:
-        print("[tunnel] Cloudflared не обнаружен. Установите его с помощью: winget install --id Cloudflare.cloudflared")
-        return None
+    conn = Connection(
+        email=userdata.get('email'),
+        password=userdata.get('pass')
+    )
 
-    cmd = [bin_path, "tunnel", "--url", f"http://localhost:{port}", "--no-autoupdate"]
-    print(f"[tunnel] Запуск: {' '.join(cmd)}")
+    endpoint = conn.publish(
+        Protocol.HTTP,
+        f"http://localhost:{port}",
+        name="ai-server",
+        auth=Auth.NONE
+    )
 
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-    except Exception as e:
-        print(f"[tunnel] Ошибка при запуске: {e}")
-        return None
-
-    output_q = queue.Queue()
-    thread = threading.Thread(target=_read_tunnel_output, args=(proc, output_q), daemon=True)
-    thread.start()
-
-    url_regex = re.compile(r"https://[a-zA-Z0-9.-]+\.trycloudflare\.com")
-    for _ in range(120):  # ~12 секунд поиска
-        try:
-            line = output_q.get(timeout=0.1)
-        except queue.Empty:
-            continue
-
-        match = url_regex.search(line)
-        if match:
-            STATE.tunnel_url = match.group(0)
-            print(f"[tunnel] URL: {STATE.tunnel_url}")
-            break
-
-    if not STATE.tunnel_url:
-        print("[tunnel] URL не был обнаружен автоматически. Просмотрите логи самостоятельно.")
-
-    return proc
-
-
-def stop_tunnel_on_exit() -> None:
-    proc = STATE.tunnel_process
-    if proc and proc.poll() is None:
-        print("[tunnel] Остановка cloudflared...")
-        proc.terminate()
+    return endpoint.url
 
 
 # ---------- API endpoints ----------
@@ -670,7 +662,7 @@ def stop_tunnel_on_exit() -> None:
 async def root() -> dict:
     return {
         "name": "AI Server",
-        "version": "1.0",
+        "version": "1.5",
         "chat_endpoint": "/chat",
         "health_endpoint": "/health",
         "model_loaded": STATE.model is not None,
@@ -705,179 +697,21 @@ async def chat(request: ChatRequest) -> ChatResponse:
         raise HTTPException(status_code=503, detail="Model is not loaded.")
 
     try:
-        effective_system_prompt = _build_effective_prompt(request.system_prompt)
-
-        context_messages = _compose_context_messages(
-            db_path=STATE.db_path,
-            username=request.username or "Пользователь",
-            session_id=request.session_id or "default",
-            limit=12,
-        )
-        result = generate_text(
-            message=request.message,
-            max_new_tokens=request.max_new_tokens,
-            temperature=request.temperature,
-            top_p=request.top_p,
-            do_sample=request.do_sample,
-            system_prompt=effective_system_prompt,
-            images=request.images,
-            context_messages=context_messages,
-        )
-        save_chat_message( # сохраняем пару сообщение юзера - ответ ии в бд
-            db_path=STATE.db_path,
-            username=request.username or "Пользователь",
-            session_id=request.session_id or "default",
-            user_message=request.message,
-            ai_response=result,
-            generation_settings={
-                "max_new_tokens": request.max_new_tokens,
-                "temperature": request.temperature,
-                "top_p": request.top_p,
-                "do_sample": request.do_sample,
-                "system_prompt": request.system_prompt,
-                "images_count": len(request.images or []),
-            },
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            INFERENCE_EXECUTOR,
+            _chat_inference,
+            request,
         )
         return ChatResponse(response=result)
+    except RuntimeError as e:
+        if "not loaded" in str(e).lower():
+            raise HTTPException(status_code=503, detail="Model is not loaded.") from e
+        logger.exception(f"Generation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Generation failed: {e}") from e
     except Exception as e:
         logger.exception(f"Generation failed: {e}")
         raise HTTPException(status_code=500, detail=f"Generation failed: {e}") from e
-
-
-@app.post("/chat/stop", tags=["chat"])
-async def stop_chat_generation(payload: StopGenerationRequest) -> dict[str, str]:
-    with ACTIVE_GENERATIONS_LOCK:
-        stop_event = ACTIVE_GENERATIONS.get(payload.request_id)
-    if stop_event is None:
-        return {"status": "not_found"}
-    stop_event.set()
-    return {"status": "stopping"}
-
-
-@app.post("/chat/stream", tags=["chat"])
-async def chat_stream(request: ChatRequest) -> StreamingResponse:
-    if STATE.model is None or STATE.tokenizer is None:
-        raise HTTPException(status_code=503, detail="Model is not loaded.")
-    request_id = (request.request_id or str(uuid.uuid4())).strip()
-    if not request_id:
-        raise HTTPException(status_code=400, detail="request_id must not be empty")
-
-    context_messages = _compose_context_messages(
-        db_path=STATE.db_path,
-        username=request.username or "Пользователь",
-        session_id=request.session_id or "default",
-        limit=12,
-    )
-    effective_system_prompt = _build_effective_prompt(request.system_prompt)
-    inputs = _prepare_model_inputs(
-        message=request.message,
-        system_prompt=effective_system_prompt,
-        images=request.images,
-        context_messages=context_messages,
-    )
-
-    try:
-        from transformers import StoppingCriteria, StoppingCriteriaList, TextIteratorStreamer  # type: ignore
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Streaming unavailable: {e}") from e
-
-    class _StopOnEventCriteria(StoppingCriteria):
-        def __init__(self, stop_event: threading.Event) -> None:
-            self._stop_event = stop_event
-
-        def __call__(self, input_ids: Any, scores: Any, **kwargs: Any) -> bool:
-            return self._stop_event.is_set()
-
-    stop_event = threading.Event()
-    with ACTIVE_GENERATIONS_LOCK:
-        ACTIVE_GENERATIONS[request_id] = stop_event
-
-    tokenizer = STATE.tokenizer
-    model = STATE.model
-    streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
-    generation_error: dict[str, Optional[str]] = {"message": None}
-
-    def _run_generation() -> None:
-        try:
-            with torch.no_grad():
-                model.generate(
-                    **inputs,
-                    max_new_tokens=request.max_new_tokens,
-                    temperature=request.temperature,
-                    top_p=request.top_p,
-                    do_sample=request.do_sample,
-                    pad_token_id=getattr(tokenizer, "eos_token_id", None),
-                    streamer=streamer,
-                    stopping_criteria=StoppingCriteriaList([_StopOnEventCriteria(stop_event)]),
-                )
-        except Exception as e:
-            generation_error["message"] = str(e)
-
-    generation_thread = threading.Thread(target=_run_generation, daemon=True)
-    generation_thread.start()
-
-    async def _event_stream():
-        full_response_parts: list[str] = []
-        streamer_iterator = iter(streamer)
-        try:
-            yield f"data: {json.dumps({'type': 'start', 'request_id': request_id}, ensure_ascii=False)}\n\n"
-            while True:
-                if stop_event.is_set() and not generation_thread.is_alive():
-                    break
-                try:
-                    token_chunk = await asyncio.to_thread(next, streamer_iterator, None)
-                except StopIteration:
-                    break
-                if token_chunk is None:
-                    break
-                full_response_parts.append(token_chunk)
-                payload = {"type": "token", "token": token_chunk, "request_id": request_id}
-                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-
-            full_response = "".join(full_response_parts).strip()
-            if generation_error["message"]:
-                error_payload = {
-                    "type": "error",
-                    "message": generation_error["message"],
-                    "request_id": request_id,
-                }
-                yield f"data: {json.dumps(error_payload, ensure_ascii=False)}\n\n"
-                return
-
-            if full_response:
-                save_chat_message(
-                    db_path=STATE.db_path,
-                    username=request.username or "Пользователь",
-                    session_id=request.session_id or "default",
-                    user_message=request.message,
-                    ai_response=full_response,
-                    generation_settings={
-                        "max_new_tokens": request.max_new_tokens,
-                        "temperature": request.temperature,
-                        "top_p": request.top_p,
-                        "do_sample": request.do_sample,
-                        "system_prompt": request.system_prompt,
-                        "images_count": len(request.images or []),
-                        "streamed": True,
-                        "stopped": stop_event.is_set(),
-                    },
-                )
-            done_payload = {
-                "type": "done",
-                "response": full_response or "(нет ответа)",
-                "stopped": stop_event.is_set(),
-                "request_id": request_id,
-            }
-            yield f"data: {json.dumps(done_payload, ensure_ascii=False)}\n\n"
-        finally:
-            with ACTIVE_GENERATIONS_LOCK:
-                ACTIVE_GENERATIONS.pop(request_id, None)
-
-    return StreamingResponse(
-        _event_stream(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
-    )
 
 
 @app.get("/chat/history/{session_id}", tags=["chat"])
@@ -1031,6 +865,8 @@ async def delete_user_endpoint(user_id: int, user_role: str = "user") -> dict[st
     return {"status": "success"}
 
 def main() -> None:
+    global args
+
     parser = argparse.ArgumentParser(description="AI сервер с поддержкой туннеля Cloudflare ")
     parser.add_argument("--host", default="0.0.0.0", help="Хост для сервера")
     parser.add_argument("--port", type=int, default=8000, help="Порт сервера")
@@ -1052,7 +888,7 @@ def main() -> None:
     load_model(args.model_path, args.base_model, args.load_in_4bit)
 
     if not args.no_tunnel:
-        STATE.tunnel_process = start_cloudflare_tunnel(args.port)
+        STATE.tunnel_url = start_cloudpub_tunnel(args.port)
 
     print("\n=== Сервер готов ===")
     print(f"Local:   http://localhost:{args.port}")
@@ -1071,7 +907,8 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        stop_tunnel_on_exit()
+        if args.no_tunnel:
+            conn.unpublish(endpoint.guid)
         sys.exit(0)
 
 #саня

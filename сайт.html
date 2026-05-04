@@ -11,6 +11,9 @@
 </head>
 <body>
     <script src="работа.js" defer></script>
+    <script>
+        localStorage.clear();
+    </script>
 
     <!-- Login Screen -->
     <div class="login-screen" id="loginScreen">
@@ -40,7 +43,10 @@
                     <label for="adminPassword">Пароль администратора</label>
                     <input type="password" id="adminPassword" placeholder="Введите пароль администратора">
                 </div>
-                <button class="login-button" id="loginButton">Войти</button>
+                <button class="login-button" id="loginButton">
+                    <span class="login-button-text">Войти</span>
+                    <span class="login-spinner" aria-hidden="true"></span>
+                </button>
                 <!-- <p class="login-footer">Вход только по имени пользователя</p> -->
             </div>
         </div>
@@ -121,7 +127,6 @@
                     <textarea id="chatInput" placeholder="Введите ваше сообщение..." rows="1"></textarea>
                     <button class="send-btn retry-btn" id="retryButton">⟳</button>
                     <button class="send-btn" id="sendButton">Отправить</button>
-                    <button class="send-btn stop-btn" id="stopButton" style="display: none;">Стоп</button>
                 </div>
             </div>
         </div>
