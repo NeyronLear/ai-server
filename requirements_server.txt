@@ -1,4 +1,3 @@
-# Requirements for AI Server
 # Install with: pip install -r requirements_server.txt
 
 # Web framework
@@ -6,13 +5,17 @@ fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
 pydantic>=2.0.0
 
-# AI/ML libraries (if not already installed)
+# ML libraries (if not already installed)
 # Note: Unsloth installation may vary - check their documentation
 torch>=2.0.0  # Usually installed with Unsloth
 transformers>=4.57.2  # Usually installed with Unsloth
 unsloth  # Install separately: pip install unsloth
 
+# Password encrypting library
 bcrypt
+
+# CloudPub tunnel provider library
+cloudpub-python-sdk
 
 # CORS support (included in fastapi but explicit)
 python-multipart>=0.0.6

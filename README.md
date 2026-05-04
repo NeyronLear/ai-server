@@ -1,11 +1,11 @@
-Этот сервер позволяет локально запустить модель Qwen 3 VL и использовать через API, с опциональной поддержкой туннеля Cloudflare и базой данных пользователей и историй их чатов.
+Этот сервер позволяет локально запустить модель Qwen 3 VL и использовать через API, с опциональной поддержкой туннеля CloudPub и базой данных пользователей и историй их чатов.
 
 ## Зависимости
 
 1. **Python 3.8+**
 2. **CUDA-capable GPU** с достаточным количеством VRAM
-3. **Unsloth** и другие необходимые библиотеки (смотреть requirements_server.txt)
-4. **Cloudflared** (необязательно)
+3. **Unsloth** и другие библиотеки (смотреть requirements_server.txt)
+4. **CloudPub** (необязательно)
 
 ## Установка
 
@@ -14,23 +14,7 @@
 ```bash
 pip install -r requirements_server.txt
 ```
-
-### 2. Установка Cloudflared
-
-**Windows:**
-- Установить из: https://github.com/cloudflare/cloudflared/releases
-- Или: `winget install --id Cloudflare.cloudflared`
-- Или: `choco install cloudflared`
-
-**Linux/Mac:**
-```bash
-wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-chmod +x cloudflared-linux-amd64
-sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
-
-# Mac
-brew install cloudflared
-```
+### 2. Сервер готов к работе!
 
 ## Настройка
 
@@ -47,26 +31,32 @@ MODEL_PATH = "lora_model"  # Path to your saved LoRA model
 python ai_server_cf.py --model-path "path/to/your/model"
 ```
 
+### Важно!
+
+Использование туннеля CloudPub возможно **только после регистрации на их сайте и указания данных для входа в коде**: ***https://cloudpub.ru/***
+
+Email и пароль передаются путем указания переменных среды google colab `email` и `pass`!
+
+Для запуска сервера на другой площадке необходимо менять код. Просим прощения!
+
 ## Использование
 
 ### Локально
 
 ```bash
-python ai_server_cf.py
+python ai_server_cf.py --no-tunnel
 ```
 
-Сервер будет запущен на `http://localhost:8000`
+Сервер будет запущен на `http://localhost:8000` по умолчанию
 
-### С туннелем Cloudflare
+### С туннелем CloudPub
 
 ```bash
 python ai_server_сf.py
 ```
 
-Сервер автоматически запустится если `cloudflared` установлен. Вы увидите ссылку по типу:
-```
-https://xxxxx.trycloudflare.com
-```
+Сервер автоматически запустится если `cloudpub-python-sdk` установлен. Вы увидите ссылку по типу:
+*`https://xxxxx.cloudpub.ru`*
 
 ### Аргументы командной строки
 
@@ -79,7 +69,7 @@ Options:
   --model-path PATH    Путь к модели ии (./lora_model по умолчанию)
   --base-model NAME    Название запасной модели, если путь основной отсутствует (Qwen/Qwen3-VL-8B-Thinking по умолчанию)
   --load-in-4bit BOOL  Загрузка в 4-х битной квантизации для оптимизации (False по умолчанию)
-  --no-tunnel          Без запуска туннеля cloudflare
+  --no-tunnel          Без запуска туннеля cloudpub
   --reload             Включает перезагрузку uvicorn
   --db-path NAME       Изменить нзвание базы данных историй чатов
 ```
@@ -93,7 +83,7 @@ python ai_server.py --port 9000
 # Без туннеля
 python ai_server.py --no-tunnel
 
-# Режим разработки с автоперезагрузкой
+# Режим разработки с автоматической перезагрузкой
 python ai_server.py --reload
 
 # Свой путь к модели
@@ -156,46 +146,7 @@ GET /
 
 Возвращает статус и информацию о сервере
 
-### 4. Остановка генерации
-```
-POST /chat/stop
-Content-Type: application/json
-```
-
-Request:
-```json
-{
-  "request_id": "<ИД запроса>"
-}
-```
-
-Останавливает генерацию запроса по `request_id`
-
-### 5. Стриминг ответа
-```
-POST /chat/stream
-Content-Type: application/json
-```
-
-Request:
-```json
-{
-  "message": "Hello, how are you?",
-  "max_new_tokens": 512,
-  "temperature": 0.7,
-  "top_p": 0.9,
-  "do_sample": true,
-  "system_prompt": "<системный промпт>",
-  "images": [],
-  "username": "user_username",
-  "session_id": "<ИД сессии>",
-  "request_id": "<ИД запроса>"
-}
-```
-
-Response: возвращает StreamingResponse
-
-### 6. История одного чата пользователя
+### 4. История одного чата пользователя
 ```
 GET /chat/history/{session_id}
 ```
@@ -218,7 +169,7 @@ Response:
 }
 ```
 
-### 7. Все истории чатов одного пользователя
+### 5. Все истории чатов одного пользователя
 ```
 GET /chat/sessions
 ```
@@ -239,7 +190,7 @@ Response:
 }
 ```
 
-### 8. Установка глобального промпта (admin-only)
+### 6. Установка глобального промпта (admin-only)
 ```
 POST /admin/update-prompt
 Content-Type: application/json
@@ -253,7 +204,7 @@ Request:
 }
 ```
 
-### 9. Список пользователей
+### 7. Список пользователей
 ```
 GET /users
 ```
@@ -266,7 +217,7 @@ Response:
 }
 ```
 
-### 10. Вход пользователей на сайт
+### 8. Вход пользователей на сайт
 ```
 POST /auth/login
 Content-Type: application/json
@@ -295,7 +246,7 @@ Response:
 }
 ```
 
-### 11. Проверка активных пользователей
+### 9. Проверка активных пользователей
 ```
 POST /auth/heartbeat
 Content-Type: application/json
@@ -315,7 +266,7 @@ Response:
 }
 ```
 
-### 12. Статистика активных пользователей (admin-only)
+### 10. Статистика активных пользователей (admin-only)
 ```
 GET /admin/stats
 ```
@@ -334,7 +285,7 @@ Response:
 }
 ```
 
-### 13. Создание, изменение, удаление пользователей
+### 11. Создание, изменение, удаление пользователей
 
 #### 1. Создание
 ```
@@ -388,9 +339,9 @@ Arguments:
 
 2. Открыть `сайт.html` в браузере
 
-3. Войдите в базовый аккаунт админа (логин и пароль находятся в работа.js)
+3. Войти в базовый аккаунт админа (логин и пароль находятся в работа.js)
 
-4. В настройках вставьте URL туннеля Cloudflare
+4. В настройках вставить URL туннеля CloudPub
 
 ## Решение проблем
 
@@ -400,15 +351,16 @@ Arguments:
 - Убедитесь, что все библиотеки установлены
 - Проверьте логи сервера
 
-### Не работает туннель Cloudflare
-- Убедитесь, что `cloudflared` установлен 
+### Не работает туннель CloudPub
+- Убедитесь, что аккаунт CloudPub создан и вы авторизуетесь в коде
+- Проверьте правильность ввода почты и пароля в переменных среды
 - Проверьте настройки брандмауэра
-- Попробуйте самостоятельно запустить туннель с помощтю `cloudflared tunnel --url http://localhost:8000` 
+- Проверьте, не достигли ли вы лимитов CloudPub
 
 ### Ошибки OOM
 - Уменьшите `max_new_tokens` 
 - Используйте меньшую модель
-- закройте приложения, забирающие VRAM
+- Закройте приложения, забирающие VRAM
 
 ### Ошибки CORS
 - Проверьте консоль браузера на специфические ошибки
