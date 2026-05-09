@@ -1024,6 +1024,8 @@ function setGenerationControls(isGenerating) {
   sendButton.disabled = isGenerating;
   retryButton.disabled = isGenerating || !lastGenerationRequest;
   imageToggleButton.disabled = isGenerating;
+  logoutButton.disabled = isGenerating;
+  newChatBtn.disabled = isGenerating;
 }
 
 async function runGeneration(requestBody) {
@@ -1086,7 +1088,7 @@ async function runChatGeneration(requestBody, serverUrl) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(requestBody),
     }),
-    180000,
+    300000,
     "Превышено время ожидания ответа от /chat",
   );
   if (!response.ok) {

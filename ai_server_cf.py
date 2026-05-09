@@ -21,14 +21,9 @@ import asyncio
 import concurrent.futures
 import json
 import os
-import queue
-import re
-import shutil
 import sqlite3
-import subprocess
 import sys
 import threading
-import uuid
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -101,10 +96,6 @@ class HeartbeatRequest(BaseModel):
     username: str = Field(min_length=1, max_length=120)
 
 
-class StopGenerationRequest(BaseModel):
-    request_id: str = Field(min_length=1, max_length=120)
-
-
 # ---------- Global runtime state ----------
 @dataclass # автоматически создают __init__ для класса, в котором инициализирует данные. по сути генератор шаблона на лету
 class RuntimeState:
@@ -120,7 +111,8 @@ admin_prompt = ""
 ACTIVE_USERS: dict[str, float] = {}
 ACTIVE_USERS_TTL_SECONDS = 120
 
-# Один воркер: инференс не блокирует event loop, параллельно на GPU всё равно обычно один запрос.
+# инференс не блокирует event loop
+# подача запросов на видеокарту идет по порядку
 INFERENCE_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
     max_workers=1,
     thread_name_prefix="ai_infer",
@@ -131,7 +123,7 @@ INFERENCE_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
 app = FastAPI(title="AI Server", version="2.0.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # lock down in production
+    allow_origins=["*"],  # разрешены ВСЕ источники
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -141,7 +133,7 @@ app.add_middleware(
 # ---------- Chat history database ----------
 def init_chat_db(db_path: str) -> None:
     with sqlite3.connect(db_path) as conn: # conn — есть соединение с нашей бд
-        conn.execute( # ввод команды — есть передача команды в sql
+        conn.execute( # execute — есть передача команды в sql
             """
             CREATE TABLE IF NOT EXISTS chat_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -396,7 +388,7 @@ def load_model(model_path: str, base_model: str, load_in_4bit: bool) -> None:
     if STATE.device == "cuda":
         print(f"[model] GPU: {torch.cuda.get_device_name(0)}")
 
-    # 1) Предпочтимый вариант - Unsloth
+    # 1) предпочтимый вариант - Unsloth
     try:
         from unsloth import FastLanguageModel  # type: ignore
 
@@ -416,7 +408,7 @@ def load_model(model_path: str, base_model: str, load_in_4bit: bool) -> None:
     except Exception as e:
         print(f"[model] Загрузка с Unsloth не удалась, переход на запасной вариант: {e}")
 
-    # 2) Запаска
+    # 2) запаска
     try:
         from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore
 
@@ -459,7 +451,7 @@ def _build_chat_messages(
             }
         )
 
-    user_content: list[dict[str, Any]] = [{"type": "text", "text": clean_message}]
+    user_content = [{"type": "text", "text": clean_message}]
 
     if multimodal_content:
         for image in images or []:
@@ -638,14 +630,26 @@ def _chat_inference(request: ChatRequest) -> str:
 # ---------- CloudPub tunnel ----------
 def start_cloudpub_tunnel(port: int) -> Optional[str]:
     from cloudpub_python_sdk import Connection, Protocol, Auth
-    from google.colab import userdata
 
     global conn, endpoint
 
-    conn = Connection(
-        email=userdata.get('email'),
-        password=userdata.get('pass')
-    )
+    email = os.getenv("CLOUDPUB_EMAIL")
+    password = os.getenv("CLOUDPUB_PASS")
+
+    if not email or not password:
+        try:
+            from google.colab import userdata
+
+            email = email or userdata.get("email")
+            password = password or userdata.get("pass")
+        except Exception as e:
+            print(f"[Tunnel] Не удалось прочитать Colab userdata: {e}")
+
+    if not email or not password:
+        print("[Tunnel] CLOUDPUB_EMAIL/CLOUDPUB_PASS не заданы. Туннель отключен.")
+        return None
+
+    conn = Connection(email=email, password=password)
 
     endpoint = conn.publish(
         Protocol.HTTP,
@@ -900,15 +904,39 @@ def main() -> None:
         print("Public:  ожидайте")
     print("====================\n")
 
-    uvicorn.run(app, host=args.host, port=args.port, reload=args.reload, log_level="info")
+    run_uvicorn_server(args.host, args.port, args.reload)
+
+
+def run_uvicorn_server(host: str, port: int, reload_enabled: bool) -> None:
+    """Запускает uvicorn, учитывая среды с уже активным event loop (например, Colab/Jupyter)."""
+    try:
+        asyncio.get_running_loop()
+        running_loop = True
+    except RuntimeError:
+        running_loop = False
+
+    if not running_loop:
+        uvicorn.run(app, host=host, port=port, reload=reload_enabled, log_level="info")
+        return
+
+    effective_reload = reload_enabled
+    if reload_enabled:
+        print("[warn] Обнаружен активный event loop; запускаю без --reload.")
+        effective_reload = False
+
+    server_thread = threading.Thread(
+        target=lambda: uvicorn.run(app, host=host, port=port, reload=effective_reload, log_level="info"),
+        name="uvicorn-server-thread",
+        daemon=False,
+    )
+    server_thread.start()
+    server_thread.join()
 
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        if args.no_tunnel:
+        if not args.no_tunnel and conn is not None and endpoint is not None:
             conn.unpublish(endpoint.guid)
         sys.exit(0)
-
-#саня
