@@ -20,13 +20,7 @@ pip install -r requirements_server.txt
 
 ### Путь модели
 
-Измените переменную `MODEL_PATH` в `ai_server.py`:
-
-```python
-MODEL_PATH = "lora_model"  # Path to your saved LoRA model
-```
-
-Или используйте аргумент командной строки:
+Используйте аргумент командной строки:
 ```bash
 python ai_server_cf.py --model-path "path/to/your/model"
 ```
