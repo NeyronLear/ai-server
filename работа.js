@@ -67,6 +67,9 @@ const maxTokensValue = document.getElementById("maxTokensValue");
 const hideThinkToggle = document.getElementById("hideThinkToggle");
 const resetSettings = document.getElementById("resetSettings");
 
+// the FUN button
+const fun = document.getElementById("coffeeBtn");
+
 // Image state
 let uploadedImages = []; // Array of {base64, preview}
 
@@ -1092,7 +1095,23 @@ async function runChatGeneration(requestBody, serverUrl) {
     "Превышено время ожидания ответа от /chat",
   );
   if (!response.ok) {
-    throw new Error(`Server error: ${response.status}`);
+    let detail = `Server error: ${response.status}`;
+    try {
+      const errBody = await response.json();
+      if (errBody && errBody.detail !== undefined && errBody.detail !== null) {
+        const d = errBody.detail;
+        detail = typeof d === "string" ? d : JSON.stringify(d);
+      }
+    } catch {
+      // keep fallback detail
+    }
+    if (response.status === 429) {
+      throw new Error(
+        detail ||
+          "Сервер перегружен: слишком много одновременных генераций. Попробуйте позже.",
+      );
+    }
+    throw new Error(detail);
   }
   const payload = await response.json();
   return payload?.response || "";
@@ -1209,6 +1228,21 @@ async function testConnection() {
   }
 }
 
+function makeCoffee() {
+  const serverUrl = getServerBaseUrl();
+  if (!serverUrl) {
+    updateServerStatusWaitingUrl();
+    return;
+  }
+
+  const response = fetch(`${serverUrl}/coffee`);
+  if (!response.ok) {
+    const error = new Error(response.status);
+    console.log(`Something went wrong... ${error}`);
+    alert(`Не удалось сварить кофе, потому что ошибка ${error}`);
+  }
+}
+
 // Event listeners
 loginMode.addEventListener("change", toggleLoginMode);
 loginButton.addEventListener("click", login);
@@ -1226,6 +1260,7 @@ settingsBtn.addEventListener("click", () => {
   settingsPanel.classList.add("open");
   settingsOverlay.classList.add("active");
 });
+fun.addEventListener("click", makeCoffee);
 
 // Settings panel controls
 closeSettings.addEventListener("click", closeSettingsPanel);

@@ -14,6 +14,8 @@
     --no-tunnel <bool> - отключение запуска туннеля cloudflare
     --reload <bool> - включает перезагрузку uvicorn
     --db-path <str> - изменить нзвание бд историй чатов
+    --max-concurrent-generations <int> - лимит одновременных генераций в очереди (10 по умолчанию); сверх — HTTP 429
+    --inference-workers <int> - число потоков инференса (2 по умолчанию); >1 только при достаточной VRAM
 """
 
 import argparse
@@ -24,6 +26,7 @@ import os
 import sqlite3
 import sys
 import threading
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -104,6 +107,7 @@ class RuntimeState:
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     tunnel_url: Optional[str] = None
     db_path: str = "chat_history.db"
+    max_concurrent_generations: int = 10
 
 
 STATE = RuntimeState()
@@ -111,16 +115,17 @@ admin_prompt = ""
 ACTIVE_USERS: dict[str, float] = {}
 ACTIVE_USERS_TTL_SECONDS = 120
 
-# инференс не блокирует event loop
-# подача запросов на видеокарту идет по порядку
-INFERENCE_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
-    max_workers=1,
-    thread_name_prefix="ai_infer",
-)
+
+@asynccontextmanager
+async def _app_lifespan(app: FastAPI):
+    # 'Это защищенная переменная или абстрактный тип данных, используемый для синхронизации доступа нескольких процессов или потоков к общим ресурсам, предотвращая одновременный доступ к ним.'
+    # по факту - очередь поток генерации с максимальным размером = max_concurrent_generations
+    app.state.generation_semaphore = asyncio.Semaphore(STATE.max_concurrent_generations) 
+    yield
 
 
 # ---------- FastAPI app ----------
-app = FastAPI(title="AI Server", version="2.0.0")
+app = FastAPI(title="AI Server", version="2.0.0", lifespan=_app_lifespan) # lifespan - контекстная функция, выполняемая при запуске или выключении сервера. в нашем случае при запуске создает семафор
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # разрешены ВСЕ источники
@@ -690,6 +695,7 @@ async def health_check() -> HealthResponse:
 
 @app.post("/chat", responses={
     503: {"description" : "Model is not loaded"},
+    429: {"description" : "Too many concurrent generations"},
     500: {"description" : "Generation failed with error"}
     }, tags=["chat"])
 async def chat(request: ChatRequest) -> ChatResponse:
@@ -700,6 +706,14 @@ async def chat(request: ChatRequest) -> ChatResponse:
         logger.exception("Model is not loaded")
         raise HTTPException(status_code=503, detail="Model is not loaded.")
 
+    sem = app.state.generation_semaphore
+    try:
+        await asyncio.wait_for(sem.acquire(), timeout=0.0)
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=429,
+            detail="Слишком много одновременных генераций. Попробуйте позже.",
+        ) from None
     try:
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
@@ -716,6 +730,8 @@ async def chat(request: ChatRequest) -> ChatResponse:
     except Exception as e:
         logger.exception(f"Generation failed: {e}")
         raise HTTPException(status_code=500, detail=f"Generation failed: {e}") from e
+    finally:
+        sem.release() # не забываем освободить место
 
 
 @app.get("/chat/history/{session_id}", tags=["chat"])
@@ -868,6 +884,10 @@ async def delete_user_endpoint(user_id: int, user_role: str = "user") -> dict[st
         raise HTTPException(status_code=404, detail="User not found")
     return {"status": "success"}
 
+@app.get("/coffee", tags=["fun"], responses={418: {"description" : "I'm a teapot"}})
+async def make_coffee() -> HTTPException:
+    return HTTPException(status_code=418, detail="Sorry, I can`t make coffee, I`m a teapot")
+
 def main() -> None:
     global args
 
@@ -884,9 +904,35 @@ def main() -> None:
     parser.add_argument("--no-tunnel", action="store_true", help="Отключение запуска туннеля")
     parser.add_argument("--reload", action="store_true", help="Включение перезагрузки uvicorn")
     parser.add_argument("--db-path", default="chat_history.db", help="Путь к SQLite базе истории чатов") # если файл не существует - автоматически создает
+    parser.add_argument(
+        "--max-concurrent-generations",
+        type=int,
+        default=10,
+        help="Максимум одновременных генераций в очереди; при превышении HTTP 429",
+    )
+    parser.add_argument(
+        "--inference-workers",
+        type=int,
+        default=2,
+        help="Потоков в пуле (1 = одна генерация за раз; >1 — несколько параллельных генераций, только при достаточной VRAM)",
+    )
     args = parser.parse_args()
 
+    if args.max_concurrent_generations < 1:
+        parser.error("--max-concurrent-generations must be >= 1")
+    if args.inference_workers < 1:
+        parser.error("--inference-workers must be >= 1")
+
+    global INFERENCE_EXECUTOR
+    # при max_workers=1 запросы к модели идут строго по очереди.
+    # значение >1 может перегрузить VRAM, потенциально непотокобезопасно
+    INFERENCE_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+        max_workers=args.inference_workers,
+        thread_name_prefix="ai_infer",
+    )
+
     STATE.db_path = args.db_path
+    STATE.max_concurrent_generations = args.max_concurrent_generations
     init_chat_db(STATE.db_path)
     init_users_db(STATE.db_path)
     load_model(args.model_path, args.base_model, args.load_in_4bit)
@@ -937,6 +983,6 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        if not args.no_tunnel and conn is not None and endpoint is not None:
+        if not args.no_tunnel:
             conn.unpublish(endpoint.guid)
         sys.exit(0)

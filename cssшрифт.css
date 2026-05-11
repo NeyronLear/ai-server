@@ -273,10 +273,17 @@ body::before {
     border-bottom: 1px solid rgba(255, 255, 255, 0.1);
 }
 
+.coffee {
+    padding: 20px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    margin-top: auto;
+}
+
 .sidebar.collapsed .sidebar-section h3,
 .sidebar.collapsed .new-chat-btn,
 .sidebar.collapsed .chat-list,
-.sidebar.collapsed .admin-panel-btn {
+.sidebar.collapsed .admin-panel-btn,
+.sidebar.collapsed .coffee-btn {
     display: none;
 }
 
@@ -287,7 +294,7 @@ body::before {
     color: #a0a0a0;
 }
 
-.new-chat-btn, .admin-panel-btn, .sidebar-customer-corner-btn {
+.new-chat-btn, .admin-panel-btn, .coffee-btn {
     width: 100%;
     padding: 12px;
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -301,7 +308,7 @@ body::before {
     margin-bottom: 15px;
 }
 
-.new-chat-btn:hover, .admin-panel-btn:hover {
+.new-chat-btn:hover, .admin-panel-btn:hover, .coffee-btn:hover {
     transform: translateY(-2px);
     box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
 }
