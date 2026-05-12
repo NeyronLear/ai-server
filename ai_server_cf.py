@@ -884,7 +884,7 @@ async def delete_user_endpoint(user_id: int, user_role: str = "user") -> dict[st
         raise HTTPException(status_code=404, detail="User not found")
     return {"status": "success"}
 
-@app.get("/coffee", tags=["fun"], responses={418: {"description" : "I'm a teapot"}})
+@app.get("/coffee", tags=["fun"], responses={418: {"description" : "I'm a teapot"}}, response_model=None)
 async def make_coffee() -> HTTPException:
     return HTTPException(status_code=418, detail="Sorry, I can`t make coffee, I`m a teapot")
 
