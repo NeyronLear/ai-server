@@ -173,8 +173,6 @@ function loadUser() {
 
 // Clear all user data
 function clearAllUserData() {
-  localStorage.removeItem("aiChatUser");
-  localStorage.removeItem("aiChatUsersDB");
   currentUser = { username: "Пользователь", role: "user" };
   usersDatabase = [];
 }
@@ -369,13 +367,6 @@ function logout() {
     adminPassword.value = "";
     showLoginScreen();
   }
-}
-
-// Clear saved user (for testing)
-function clearSavedUser() {
-  localStorage.removeItem("aiChatUser");
-  currentUser = { username: "Пользователь", role: "user" };
-  location.reload();
 }
 
 // Force logout - call from console if needed
@@ -1235,12 +1226,12 @@ function makeCoffee() {
     return;
   }
 
-  const response = fetch(`${serverUrl}/coffee`);
+  const response = await fetch(`${serverUrl}/coffee`);
   if (!response.ok) {
-    const error = new Error(response.status);
-    console.log(`Something went wrong... ${error}`);
-    alert(`Не удалось сварить кофе, потому что ошибка ${error}`);
-  }
+      const message = await response.text();
+      console.log(`Something went wrong... ${message}`);
+      alert(`Не удалось сварить кофе, потому что ${message}`);
+    }
 }
 
 // Event listeners
@@ -1354,7 +1345,6 @@ document.getElementById("newChatBtn").addEventListener("click", () => {
 // Make functions global for onclick handlers
 window.editUser = editUser;
 window.deleteUser = deleteUser;
-window.clearSavedUser = clearSavedUser;
 
 // Initialize
 initializeApp();

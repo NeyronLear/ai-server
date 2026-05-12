@@ -708,7 +708,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
 
     sem = app.state.generation_semaphore
     try:
-        await asyncio.wait_for(sem.acquire(), timeout=0.0)
+        await asyncio.wait_for(sem.acquire(), timeout=1.0)
     except asyncio.TimeoutError:
         raise HTTPException(
             status_code=429,
@@ -886,7 +886,7 @@ async def delete_user_endpoint(user_id: int, user_role: str = "user") -> dict[st
 
 @app.get("/coffee", tags=["fun"], responses={418: {"description" : "I'm a teapot"}}, response_model=None)
 async def make_coffee() -> HTTPException:
-    return HTTPException(status_code=418, detail="Sorry, I can`t make coffee, I`m a teapot")
+    raise HTTPException(status_code=418, detail="Sorry, I can`t make coffee, I`m a teapot")
 
 def main() -> None:
     global args
