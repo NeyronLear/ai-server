@@ -79,7 +79,7 @@ let currentSettings = {
   systemPrompt: "",
   temperature: 0.7,
   topP: 0.9,
-  maxTokens: 512,
+  maxTokens: 4096,
   hideThink: true,
 };
 
@@ -89,13 +89,12 @@ let currentUser = {
   role: "user", // 'user' or 'admin'
 };
 
-// Current chat session id (used for DB history on backend)
+// Current chat session id
 let currentSessionId = `chat_${Date.now()}`;
 
-// Sidebar sessions loaded from backend
+// Sidebar sessions
 let chatSessions = [];
 
-// Users database (stored on backend server)
 let usersDatabase = [];
 let loginInProgress = false;
 let activeRequestController = null;
@@ -116,8 +115,8 @@ function loadSettings() {
       SERVER_URL.value = currentSettings.serverUrl || "";
       systemPrompt.value = currentSettings.systemPrompt || "";
       temperatureSlider.value = currentSettings.temperature || 0.7;
-      topPSlider.value = currentSettings.topP || 0.9;
-      maxTokensSlider.value = currentSettings.maxTokens || 512;
+      topPSlider.value = currentSettings.topP || 0.95;
+      maxTokensSlider.value = currentSettings.maxTokens || 4096;
       hideThinkToggle.checked = currentSettings.hideThink !== false;
       updateSliderValues();
     } catch (e) {
@@ -149,11 +148,6 @@ async function loadUsersDatabase() {
     renderUserList();
     totalUsers.textContent = "0";
   }
-}
-
-async function saveUsersDatabase() {
-  // Users are persisted through backend API calls.
-  await loadUsersDatabase();
 }
 
 // Load user from localStorage
@@ -473,7 +467,7 @@ async function addUser() {
       const message = await response.text();
       throw new Error(message || `Ошибка сервера: ${response.status}`);
     }
-    await saveUsersDatabase();
+    await loadUsersDatabase();
   } catch (error) {
     console.error("Error adding user:", error);
     alert(`Не удалось добавить пользователя: ${error.message}`);
@@ -507,7 +501,7 @@ async function editUser(userId) {
         const message = await response.text();
         throw new Error(message || `Ошибка сервера: ${response.status}`);
       }
-      await saveUsersDatabase();
+      await loadUsersDatabase();
     } catch (error) {
       console.error("Error editing user:", error);
       alert(`Не удалось обновить пользователя: ${error.message}`);
@@ -534,7 +528,7 @@ async function deleteUser(userId) {
         const message = await response.text();
         throw new Error(message || `Ошибка сервера: ${response.status}`);
       }
-      await saveUsersDatabase();
+      await loadUsersDatabase();
     } catch (error) {
       console.error("Error deleting user:", error);
       alert(`Не удалось удалить пользователя: ${error.message}`);
@@ -1219,7 +1213,7 @@ async function testConnection() {
   }
 }
 
-function makeCoffee() {
+async function makeCoffee() {
   const serverUrl = getServerBaseUrl();
   if (!serverUrl) {
     updateServerStatusWaitingUrl();
@@ -1228,10 +1222,10 @@ function makeCoffee() {
 
   const response = await fetch(`${serverUrl}/coffee`);
   if (!response.ok) {
-      const message = await response.text();
-      console.log(`Something went wrong... ${message}`);
-      alert(`Не удалось сварить кофе, потому что ${message}`);
-    }
+    const message = await response.text();
+    console.log(`Something went wrong... ${message}`);
+    alert(`Не удалось сварить кофе, потому что ${message}`);
+  }
 }
 
 // Event listeners
@@ -1348,6 +1342,3 @@ window.deleteUser = deleteUser;
 
 // Initialize
 initializeApp();
-
-// Add logout button to console for easy access
-console.log("Чтобы выйти, выполните: clearSavedUser()");
