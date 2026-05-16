@@ -1,7 +1,7 @@
-// Configuration - Update these to match your Python server
-const API_ENDPOINT = "/chat"; // Change endpoint if needed
+// Configuration
+const API_ENDPOINT = "/chat";
 const LOGIN_ENDPOINT = "/auth/login";
-const ADMIN_PASSWORD = "admin123"; // Default admin password - change in production
+const ADMIN_PASSWORD = "admin123";
 const ADMIN_LOGIN = "bebra";
 
 // DOM elements
@@ -66,7 +66,7 @@ const maxTokensValue = document.getElementById("maxTokensValue");
 const hideThinkToggle = document.getElementById("hideThinkToggle");
 const resetSettings = document.getElementById("resetSettings");
 
-// the FUN button
+// The FUN button
 const fun = document.getElementById("coffeeBtn");
 
 // Image state
