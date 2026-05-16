@@ -33,10 +33,10 @@ const activeUsers = document.getElementById("activeUsers");
 const menuToggle = document.getElementById("menuToggle");
 const sidebar = document.getElementById("sidebar");
 const settingsBtn = document.getElementById("settingsBtn");
-const serverStatusIndicator = document.getElementById("serverStatusIndicator");
 const statusDot = document.getElementById("statusDot");
 const statusText = document.getElementById("statusText");
 const chatList = document.getElementById("chatList");
+const newChatBtn = document.getElementById("newChatBtn");
 
 const chatMessages = document.getElementById("chatMessages");
 const chatInput = document.getElementById("chatInput");
@@ -51,7 +51,6 @@ const imagePreviewContainer = document.getElementById("imagePreviewContainer");
 const imageToggleButton = document.getElementById("imageToggleButton");
 
 // Settings elements
-const settingsButton = document.getElementById("settingsBtn");
 const settingsPanel = document.getElementById("settingsPanel");
 const settingsOverlay = document.getElementById("settingsOverlay");
 const closeSettings = document.getElementById("closeSettings");
@@ -97,14 +96,10 @@ let chatSessions = [];
 
 let usersDatabase = [];
 let loginInProgress = false;
-let activeRequestController = null;
-let activeRequestId = null;
 let lastGenerationRequest = null;
 let heartbeatTimer = null;
-let heartbeatFailures = 0;
 const HEARTBEAT_INTERVAL_MS = 30000;
 const HEARTBEAT_TIMEOUT_MS = 8000;
-const MAX_HEARTBEAT_FAILURES_BEFORE_DISCONNECT = 3;
 
 // Load settings from localStorage
 function loadSettings() {
@@ -148,21 +143,6 @@ async function loadUsersDatabase() {
     renderUserList();
     totalUsers.textContent = "0";
   }
-}
-
-// Load user from localStorage
-function loadUser() {
-  const saved = localStorage.getItem("aiChatUser");
-  if (saved) {
-    try {
-      currentUser = JSON.parse(saved);
-      return true;
-    } catch (e) {
-      console.error("Error loading user:", e);
-      return false;
-    }
-  }
-  return false;
 }
 
 // Clear all user data
@@ -352,22 +332,12 @@ async function login() {
 // Logout function
 function logout() {
   if (confirm("Вы уверены, что хотите выйти?")) {
-    if (activeRequestController) {
-      activeRequestController.abort();
-      activeRequestController = null;
-    }
     clearAllUserData();
     usernameInput.value = "";
     adminPassword.value = "";
     showLoginScreen();
   }
 }
-
-// Force logout - call from console if needed
-window.forceLogout = function () {
-  localStorage.removeItem("aiChatUser");
-  console.log("Пользователь вышел. Обновите страницу.");
-};
 
 // Force logout - call from console if needed
 window.forceLogout = function () {
@@ -729,7 +699,7 @@ function imageToBase64(file) {
 }
 
 // Function to add image preview
-function addImagePreview(file, base64) {
+function addImagePreview(base64) {
   const previewDiv = document.createElement("div");
   previewDiv.className = "image-preview";
 
@@ -765,7 +735,7 @@ imageUploadInput.addEventListener("change", async (e) => {
     if (file.type.startsWith("image/")) {
       try {
         const base64 = await imageToBase64(file);
-        addImagePreview(file, base64);
+        addImagePreview(base64);
         imageUploadContainer.classList.add("active");
       } catch (error) {
         console.error("Error processing image:", error);
@@ -1052,7 +1022,6 @@ async function runGeneration(requestBody) {
     );
     await loadChatSessions();
     updateServerStatus(true);
-    heartbeatFailures = 0;
   } catch (error) {
     console.error("Error:", error);
     showTypingIndicator(false);
@@ -1062,8 +1031,6 @@ async function runGeneration(requestBody) {
       `Ошибка: ${error.message || "Не удалось получить ответ от сервера"}`,
     );
   } finally {
-    activeRequestController = null;
-    activeRequestId = null;
     setGenerationControls(false);
     chatInput.focus();
   }
@@ -1167,10 +1134,8 @@ async function sendHeartbeat() {
     if (!response.ok) {
       throw new Error(`Heartbeat status ${response.status}`);
     }
-    heartbeatFailures = 0;
   } catch (error) {
     console.debug("Heartbeat failed:", error);
-    heartbeatFailures += 1;
   }
 }
 
@@ -1183,7 +1148,6 @@ function startHeartbeat() {
     updateServerStatusWaitingUrl();
     return;
   }
-  heartbeatFailures = 0;
   sendHeartbeat();
   heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
 }
@@ -1292,6 +1256,15 @@ hideThinkToggle.addEventListener("change", saveSettings);
 serverButton.addEventListener("click", testConnection);
 retryButton.addEventListener("click", retryLastGeneration);
 
+function bindEnterToLogin(input) {
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      login();
+    }
+  });
+}
+
 // Reset settings
 resetSettings.addEventListener("click", () => {
   if (confirm("Сбросить все настройки?")) {
@@ -1315,19 +1288,8 @@ resetSettings.addEventListener("click", () => {
 });
 
 // Allow Enter key to login
-userPassword.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") {
-    e.preventDefault();
-    login();
-  }
-});
-
-adminPassword.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") {
-    e.preventDefault();
-    login();
-  }
-});
+bindEnterToLogin(userPassword);
+bindEnterToLogin(adminPassword);
 
 // New chat button
 document.getElementById("newChatBtn").addEventListener("click", () => {

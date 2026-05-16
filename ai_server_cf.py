@@ -1,4 +1,4 @@
-"""FastAPI сервер для хостинга модели ии с поддержкой туннеля Cloudflare.
+"""FastAPI сервер для хостинга модели ии с поддержкой туннеля Cloudpub.
 
 Примеры использования:
     python ai_server_cf.py --model-path "./lora_model" --port 8000
@@ -11,11 +11,11 @@
     --model-path <str> - путь к модели ии (./lora_model по умолчанию)
     --base-model <str> - название запасной модели, если путь основной отсутствует (Qwen/Qwen3-VL-8B-Thinking по умолчанию)
     --load-in-4bit <bool> - загрузка в 4-ех битной квантизации для оптимизации (false по умолчанию)
-    --no-tunnel <bool> - отключение запуска туннеля cloudflare
+    --no-tunnel <bool> - отключение запуска туннеля cloudpub
     --reload <bool> - включает перезагрузку uvicorn
-    --db-path <str> - изменить нзвание бд историй чатов
+    --db-path <str> - изменить путь бд историй чатов
     --max-concurrent-generations <int> - лимит одновременных генераций в очереди (10 по умолчанию); сверх — HTTP 429
-    --inference-workers <int> - число потоков инференса (2 по умолчанию); >1 только при достаточной VRAM
+    --inference-workers <int> - число потоков генераций (2 по умолчанию); >1 только при достаточной VRAM
 """
 
 import argparse
@@ -39,9 +39,9 @@ import torch
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+logger = logging.getLogger(__name__)
 
 # ---------- Request / response ----------
 class ChatRequest(BaseModel):
@@ -114,12 +114,20 @@ STATE = RuntimeState()
 admin_prompt = ""
 ACTIVE_USERS: dict[str, float] = {}
 ACTIVE_USERS_TTL_SECONDS = 120
+INFERENCE_EXECUTOR: Optional[concurrent.futures.ThreadPoolExecutor] = None
+args = None
+conn = None
+endpoint = None
 
 
-@asynccontextmanager
-async def _app_lifespan(app: FastAPI):
+@asynccontextmanager # создает ассинхронного менеджера
+# краткая структура:
+#                   то что перед yield - выполняется при старте
+#                   сам yield передает контроль в main()
+#                   то что после yield - выполняется при выключении
+async def _app_lifespan(app: FastAPI): 
     # 'Это защищенная переменная или абстрактный тип данных, используемый для синхронизации доступа нескольких процессов или потоков к общим ресурсам, предотвращая одновременный доступ к ним.'
-    # по факту - очередь поток генерации с максимальным размером = max_concurrent_generations
+    # по факту - очередь потоков генерации с максимальным размером = max_concurrent_generations
     app.state.generation_semaphore = asyncio.Semaphore(STATE.max_concurrent_generations) 
     yield
 
@@ -389,16 +397,16 @@ def list_chat_sessions(
 # ---------- Model loading / inference ----------
 def load_model(model_path: str, base_model: str, load_in_4bit: bool) -> None:
     """Пытается загрузить модели с помощью Unsloth, использует Transformers в случае ошибки."""
-    print(f"[model] Устройство: {STATE.device}")
+    print(f"[Model] Устройство: {STATE.device}")
     if STATE.device == "cuda":
-        print(f"[model] GPU: {torch.cuda.get_device_name(0)}")
+        print(f"[Model] GPU: {torch.cuda.get_device_name(0)}")
 
     # 1) предпочтимый вариант - Unsloth
     try:
         from unsloth import FastLanguageModel  # type: ignore
 
         source = model_path if os.path.isdir(model_path) else base_model
-        print(f"[model] Загрузка с помощью Unsloth из: {source}")
+        print(f"[Model] Загрузка с помощью Unsloth из: {source}")
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name=source,
             max_seq_length=4096,
@@ -408,17 +416,17 @@ def load_model(model_path: str, base_model: str, load_in_4bit: bool) -> None:
         FastLanguageModel.for_inference(model)
         STATE.model = model
         STATE.tokenizer = tokenizer
-        print("[model] Успешно загружено.")
+        print("[Model] Успешно загружено.")
         return
     except Exception as e:
-        print(f"[model] Загрузка с Unsloth не удалась, переход на запасной вариант: {e}")
+        print(f"[Model] Загрузка с Unsloth не удалась, переход на запасной вариант: {e}")
 
     # 2) запаска
     try:
         from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore
 
         source = model_path if os.path.isdir(model_path) else base_model
-        print(f"[model] Загрузка с помощью Transformers из: {source}")
+        print(f"[Model] Загрузка с помощью Transformers из: {source}")
 
         dtype = torch.float16 if STATE.device == "cuda" else torch.float32
         tokenizer = AutoTokenizer.from_pretrained(source, trust_remote_code=True)
@@ -434,7 +442,7 @@ def load_model(model_path: str, base_model: str, load_in_4bit: bool) -> None:
 
         STATE.model = model
         STATE.tokenizer = tokenizer
-        print("[model] Успешно загружено.")
+        print("[Model] Успешно загружено.")
     except Exception as e:
         raise RuntimeError(f"Загрузка не удалась ни одним из способов: {e}") from e
 
@@ -593,7 +601,7 @@ def generate_text(
 
 
 def _chat_inference(request: ChatRequest) -> str:
-    """Синхронная часть /chat: контекст, генерация, запись в БД. Выполняется в пуле потоков."""
+    """Синхронная часть /chat. Выполняется в пуле потоков."""
     if STATE.model is None or STATE.tokenizer is None:
         raise RuntimeError("Model is not loaded.")
 
@@ -699,12 +707,12 @@ async def health_check() -> HealthResponse:
     500: {"description" : "Generation failed with error"}
     }, tags=["chat"])
 async def chat(request: ChatRequest) -> ChatResponse:
-    logging.basicConfig(format="%(asctime)s %(levelname)s:%(message)s")
-    logger = logging.getLogger(__name__)
-
     if STATE.model is None or STATE.tokenizer is None:
-        logger.exception("Model is not loaded")
+        logger.error("Model is not loaded")
         raise HTTPException(status_code=503, detail="Model is not loaded.")
+    if INFERENCE_EXECUTOR is None:
+        logger.error("Inference executor is not initialized")
+        raise HTTPException(status_code=503, detail="Inference executor is not initialized.")
 
     sem = app.state.generation_semaphore
     try:
@@ -725,10 +733,10 @@ async def chat(request: ChatRequest) -> ChatResponse:
     except RuntimeError as e:
         if "not loaded" in str(e).lower():
             raise HTTPException(status_code=503, detail="Model is not loaded.") from e
-        logger.exception(f"Generation failed: {e}")
+        logger.exception("Generation failed: %s", e)
         raise HTTPException(status_code=500, detail=f"Generation failed: {e}") from e
     except Exception as e:
-        logger.exception(f"Generation failed: {e}")
+        logger.exception("Generation failed: %s", e)
         raise HTTPException(status_code=500, detail=f"Generation failed: {e}") from e
     finally:
         sem.release() # не забываем освободить место
@@ -919,9 +927,9 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.max_concurrent_generations < 1:
-        parser.error("--max-concurrent-generations must be >= 1")
+        parser.error("--max-concurrent-generations должен быть >= 1")
     if args.inference_workers < 1:
-        parser.error("--inference-workers must be >= 1")
+        parser.error("--inference-workers должен быть >= 1")
 
     global INFERENCE_EXECUTOR
     # при max_workers=1 запросы к модели идут строго по очереди.
@@ -967,7 +975,7 @@ def run_uvicorn_server(host: str, port: int, reload_enabled: bool) -> None:
 
     effective_reload = reload_enabled
     if reload_enabled:
-        print("[warn] Обнаружен активный event loop; запускаю без --reload.")
+        print("[Warn] Обнаружен активный event loop; запуск без --reload.")
         effective_reload = False
 
     server_thread = threading.Thread(
@@ -981,8 +989,12 @@ def run_uvicorn_server(host: str, port: int, reload_enabled: bool) -> None:
 
 if __name__ == "__main__":
     try:
+        logging.basicConfig(format="%(asctime)s %(levelname)s:%(message)s", level=logging.INFO)
         main()
     except KeyboardInterrupt:
-        if not args.no_tunnel:
-            conn.unpublish(endpoint.guid)
+        if args is not None and not args.no_tunnel and conn is not None and endpoint is not None:
+            try:
+                conn.unpublish(endpoint.guid)
+            except Exception:
+                pass
         sys.exit(0)
