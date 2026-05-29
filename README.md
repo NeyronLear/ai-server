@@ -1,4 +1,4 @@
-<a href="(https://github.com/unslothai/unsloth"><picture>
+<a href="https://github.com/unslothai/unsloth"><picture>
   <img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/made with unsloth.png" width="200" align="center" />
 </picture></a>
 
